@@ -1,0 +1,111 @@
+market:
+  symbol: "EURUSD"      # Можно менять на GBPUSD, XAUUSD и т.п.
+  timeframe: "M1"       # master-история, всегда M1
+  working_timeframe: "H1"  # РАБОЧИЙ ТФ для снапшотов/обучения
+  n_bars_master: 70000  # Сколько баров тянуть в master при первичной загрузке
+
+paths:
+  master_pattern: "{symbol}_{tf}_master.parquet"
+  snapshot_pattern: "{symbol}_{tf}_{role}_snapshot_{start}_{end}.parquet"
+#имя счёта / сервер,
+#настройки для LIVE,
+#параметры RL.
+
+dukascopy:
+
+  symbol: null  # если null — использовать market.symbol
+  start_year: 2010  # с какого года качать историю
+  years: 15  # сколько лет максимум (чтобы не выкачать случайно весь XX век)
+  external_dir: "data/external"   # каталог, куда складывать годовые parquet
+  price_divisor: 100000   # для EURUSD/GBPUSD и т.п. 1.12345 = 112345 / 1e5
+
+features:
+  window_size: 128       # длина окна для RL
+
+  # Базовые (глобальные) настройки периодов
+  atr:
+    atr_period: 14
+  volatility:
+    vol_period: 20
+  returns:
+    short_periods: [1, 5]
+    ret_long_period: 5
+  spread:
+    spread_period: 20
+  supertrend:
+    enabled: true
+
+    atr_period: 5       # как в твоём MT5-индике
+    cci_period: 50      # как в MT5
+    cci_price: typical  # можно оставить как фикс, если не хочешь усложнять
+
+    tfs:
+      - H1
+      - H4
+      - D1
+
+    outputs:
+      supertrend_lines:
+        - H1
+        - H4
+        - D1
+      cci_value:
+        enabled: true
+        tfs: [ "H1" ]       # например, только рабочий TF
+      cci_sign:
+        enabled: true     # -1/0/1 или bool
+        tfs: [ "H1", "H4", "D1" ]
+      diffs:
+        enabled: true
+        ohlc: [ "open", "high", "low", "close" ]
+        tfs: [ "H1", "H4", "D1" ]
+  murrey:
+    enabled: true
+
+    period_bars: 64       # сколько баров TF нужно для расчёта сетки
+    tfs:
+      - H1                # текущий TF (обязательно)
+      - H4                # опция
+      - D1                # опция
+
+    outputs:
+      levels: true        # сами уровни 0/8, 1/8, ... 8/8
+      distances: true     # расстояние цены до ближайшего уровня, зона и т.п.
+
+  # Глобальный порядок применения фич для всех профилей
+  pipeline:
+    - atr
+    - returns
+    - volatility
+    - spread
+    - supertrend
+
+  # Профили фич
+  default_profile: "name1"
+
+  profiles:
+    name1:
+      use_atr: true
+      use_volatility: true
+      use_returns: true
+      use_spread: true
+      supertrend: true
+
+      atr_period: 14
+      vol_period: 20
+      short_periods: [1, 5]
+      ret_long_period: 5
+      spread_period: 20
+
+    name2:
+      use_atr: true
+      use_volatility: true
+      use_returns: true
+      use_spread: true
+      supertrend: true
+
+      atr_period: 21
+      vol_period: 30
+      short_periods: [1, 5]
+      ret_long_period: 10
+      spread_period: 20
