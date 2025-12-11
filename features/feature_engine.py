@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence, Callable, Dict, Optional, List, Any
 from features.mtf_utils import resample_ohlc, align_higher_tf_to_working
-from features.indicators import compute_supertrend_and_cci
+from features.indicators import (
+    compute_supertrend_and_cci,
+    compute_atr,
+    compute_returns,
+    compute_volatility,
+    compute_spread_stats,
+)
 
 import numpy as np
 import pandas as pd
@@ -394,15 +400,7 @@ def feature_atr(df: pd.DataFrame, ctx: FeatureContext) -> None:
         return
 
     period = engine._eff_atr_period()
-    prev_close = df["close"].shift(1)
-
-    high_low = df["high"] - df["low"]
-    high_prev = (df["high"] - prev_close).abs()
-    low_prev = (df["low"] - prev_close).abs()
-
-    tr = pd.concat([high_low, high_prev, low_prev], axis=1).max(axis=1)
-    df["atr"] = tr.rolling(window=period, min_periods=1).mean()
-
+    df["atr"] = compute_atr(df, period)
 
 @register_feature(
     "returns",
@@ -428,12 +426,9 @@ def feature_returns(df: pd.DataFrame, ctx: FeatureContext) -> None:
     shorts = engine._eff_short_periods()
     long_p = engine._eff_ret_long_period()
 
-    for p in shorts:
-        col = f"ret_{p}"
-        df[col] = close.pct_change(periods=p).fillna(0.0)
-
-    col_long = f"ret_long_{long_p}"
-    df[col_long] = close.pct_change(periods=long_p).fillna(0.0)
+    returns_dict = compute_returns(close, shorts, long_p)
+    for col, series in returns_dict.items():
+        df[col] = series
 
 
 @register_feature(
@@ -455,10 +450,7 @@ def feature_volatility(df: pd.DataFrame, ctx: FeatureContext) -> None:
         return
 
     period = engine._eff_vol_period()
-    returns_1 = df["close"].pct_change().fillna(0.0)
-    df["volatility"] = (
-        returns_1.rolling(window=period, min_periods=1).std().fillna(0.0)
-    )
+    df["volatility"] = compute_volatility(df["close"], period)
 
 
 @register_feature(
@@ -485,20 +477,18 @@ def feature_spread(df: pd.DataFrame, ctx: FeatureContext) -> None:
     period = engine._eff_spread_period()
     spread = df["spread"]
 
-    df["spread_mean"] = (
-        spread.rolling(window=period, min_periods=1).mean().fillna(0.0)
-    )
-    df["spread_std"] = (
-        spread.rolling(window=period, min_periods=1).std().fillna(0.0)
+    atr_series = df["atr"] if "atr" in df.columns else None
+
+    spread_mean, spread_std, spread_over_atr = compute_spread_stats(
+        spread=spread,
+        period=period,
+        atr=atr_series,
     )
 
-    if "atr" in df.columns:
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ratio = df["spread_mean"] / df["atr"]
-            ratio = ratio.replace([np.inf, -np.inf], 0.0).fillna(0.0)
-        df["spread_over_atr"] = ratio
-    else:
-        df["spread_over_atr"] = 0.0
+    df["spread_mean"] = spread_mean
+    df["spread_std"] = spread_std
+    df["spread_over_atr"] = spread_over_atr
+
 
 @register_feature(
     "supertrend",

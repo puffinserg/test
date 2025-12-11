@@ -102,3 +102,78 @@ def compute_supertrend_and_cci(
     cci = ((tp - sma_tp) / denom).replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
     return st_series, dir_series, cci
+
+def compute_atr(df_ohlc: pd.DataFrame, period: int) -> pd.Series:
+    """
+    ATR на основе стандартного True Range.
+    Логика 1-в-1 как в feature_atr.
+    """
+    required = {"high", "low", "close"}
+    if not required.issubset(df_ohlc.columns):
+        raise ValueError(f"compute_atr: OHLC columns missing: {required}")
+
+    prev_close = df_ohlc["close"].shift(1)
+    high_low = df_ohlc["high"] - df_ohlc["low"]
+    high_prev = (df_ohlc["high"] - prev_close).abs()
+    low_prev = (df_ohlc["low"] - prev_close).abs()
+
+    tr = pd.concat([high_low, high_prev, low_prev], axis=1).max(axis=1)
+    atr = tr.rolling(window=period, min_periods=1).mean()
+    return atr
+
+
+def compute_returns(
+    close: pd.Series, short_periods: Sequence[int], long_period: int
+) -> Dict[str, pd.Series]:
+    """
+    Доходности ret_p и ret_long_p по закрытию.
+    Логика 1-в-1 как в feature_returns.
+    """
+    result: Dict[str, pd.Series] = {}
+
+    for p in short_periods:
+        col = f"ret_{p}"
+        result[col] = close.pct_change(periods=p).fillna(0.0)
+
+    col_long = f"ret_long_{long_period}"
+    result[col_long] = close.pct_change(periods=long_period).fillna(0.0)
+
+    return result
+
+
+def compute_volatility(close: pd.Series, period: int) -> pd.Series:
+    """
+    Волатильность как rolling std от дневной доходности (ret_1).
+    Логика 1-в-1 как в feature_volatility.
+    """
+    returns_1 = close.pct_change().fillna(0.0)
+    vol = returns_1.rolling(window=period, min_periods=1).std().fillna(0.0)
+    return vol
+
+
+def compute_spread_stats(
+    spread: pd.Series,
+    period: int,
+    atr: Optional[pd.Series] = None,
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Фичи по спреду:
+      - среднее,
+      - std,
+      - отношение среднего спреда к ATR (spread_over_atr).
+
+    Логика 1-в-1 как в feature_spread:
+    - если ATR нет, spread_over_atr = 0.0.
+    """
+    spread_mean = spread.rolling(window=period, min_periods=1).mean().fillna(0.0)
+    spread_std = spread.rolling(window=period, min_periods=1).std().fillna(0.0)
+
+    if atr is not None:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = spread_mean / atr
+            ratio = ratio.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    else:
+        # точное соответствие старому коду: просто нули
+        ratio = pd.Series(0.0, index=spread_mean.index)
+
+    return spread_mean, spread_std, ratio
