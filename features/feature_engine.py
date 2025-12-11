@@ -39,6 +39,27 @@ class FeatureContext:
 FEATURE_REGISTRY: Dict[str, FeatureFunc] = {}
 FEATURE_META: Dict[str, FeatureMeta] = {}
 
+TF_TO_MINUTES = {
+    "M1": 1,
+    "M5": 5,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H4": 240,
+    "D1": 1440,
+}
+
+
+def _tf_factor(tf: str, base_tf: str) -> float:
+    """
+    Во сколько раз tf «дольше» base_tf.
+    Например: H4 vs H1 => 4, D1 vs H1 => 24.
+    """
+    base = TF_TO_MINUTES.get(base_tf)
+    cur = TF_TO_MINUTES.get(tf)
+    if base is None or cur is None:
+        return 1.0
+    return cur / base
 
 def register_feature(
     name: str,
@@ -60,6 +81,58 @@ def register_feature(
         return func
     return decorator
 
+def supertrend_lookback(ctx: FeatureContext) -> int:
+    """
+    Сколько баров рабочего TF нужно, чтобы SuperTrend был «устоявшимся»
+    на ВСЕХ таймфреймах из cfg.supertrend.tfs.
+
+    База: max(atr_period, cci_period) * 6 на TF SuperTrend.
+    Дальше умножаем на max-множитель между рабочим TF и старшими TF.
+    """
+    engine = ctx.engine
+    cfg_st = ctx.cfg.supertrend
+
+    atr_p = engine._eff_st_atr_period()
+    cci_p = engine._eff_st_cci_period()
+    base_lookback = max(atr_p, cci_p) * 6
+
+    # рабочий TF (например, H1)
+    from config.settings import SETTINGS
+    working_tf = SETTINGS.market.working_timeframe
+
+    tfs = cfg_st.tfs or [working_tf]
+    factors = [_tf_factor(tf, working_tf) for tf in tfs]
+    max_factor = max(factors) if factors else 1.0
+
+    lookback = int(base_lookback * max_factor)
+    # safety: хотя бы 1 бар
+    return max(1, lookback)
+
+# в feature_engine.py, рядом с supertrend_lookback
+
+def murrey_lookback(ctx: FeatureContext) -> int:
+    """
+    Сколько баров рабочего TF нужно, чтобы уровни Мюррея стабилизировались
+    на всех таймфреймах из cfg.murrey.tfs.
+    """
+    engine = ctx.engine
+    cfg_m = ctx.cfg.murrey
+
+    period_bars = cfg_m.period_bars  # 64 / 128 / 200 ...
+    # коэффициент запаса для сетки: можно будет вынести в YAML, если захотим
+    k = 2.0
+
+    base_lookback = int(period_bars * k)
+
+    from config.settings import SETTINGS
+    working_tf = SETTINGS.market.working_timeframe
+
+    tfs = cfg_m.tfs or [working_tf]
+    factors = [_tf_factor(tf, working_tf) for tf in tfs]
+    max_factor = max(factors) if factors else 1.0
+
+    lookback = int(base_lookback * max_factor)
+    return max(1, lookback)
 
 # ---------- Вспомогательная обёртка над SETTINGS.features (опционально) ----------
 
@@ -416,15 +489,155 @@ def feature_spread(df: pd.DataFrame, ctx: FeatureContext) -> None:
     else:
         df["spread_over_atr"] = 0.0
 
-
-# Заранее подготавливаем крючок под SuperTrend, но сам индикатор добавим позже.
 @register_feature(
     "supertrend",
     default_enabled=False,
-    lookback_fn=lambda ctx: max(1, ctx.engine._eff_st_atr_period()) * 6,
+    lookback_fn=supertrend_lookback,
 )
 def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
-    print("[feature_engine] WARNING: SuperTrend feature is not implemented yet.")
-    # просто ничего не делаем, чтобы не падать
-    return
+    """
+    Реализация SuperTrend + CCI для рабочего таймфрейма.
+
+    Что делаем:
+    - считаем ATR c периодом supertrend_atr_period (из профиля или из cfg.supertrend);
+    - строим классический SuperTrend (верхняя/нижняя ленты + линия тренда);
+    - считаем CCI по typical price;
+    - в зависимости от settings.yaml создаём колонки:
+        st_<TF>, cci_<TF>, cci_sign_<TF>, <OHLC>_minus_st_<TF>.
+    Пока считаем только для рабочего ТФ (market.working_timeframe), MTF сделаем позже.
+    """
+    profile = ctx.profile
+    engine = ctx.engine
+    cfg_st = ctx.cfg.supertrend
+
+    # отключено профилем или глобально
+    if not getattr(profile, "use_supertrend", True):
+        return
+    if not cfg_st.enabled:
+        return
+
+    required_cols = {"high", "low", "close"}
+    if not required_cols.issubset(df.columns):
+        print("[feature_engine] WARNING: cannot compute SuperTrend – OHLC missing")
+        return
+
+    # Рабочий таймфрейм (например, "H1")
+    try:
+        from config.settings import SETTINGS  # уже импортирован выше, но страховка на случай refactor
+        working_tf = SETTINGS.market.working_timeframe
+    except Exception:
+        working_tf = "H1"
+
+    # --- Параметры из профиля / конфигурации ---
+    atr_period = engine._eff_st_atr_period()
+    multiplier = engine._eff_st_multiplier()
+    cci_period = engine._eff_st_cci_period()
+
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+
+    # --- ATR для SuperTrend (локальный, независимый от "atr") ---
+    prev_close = close.shift(1)
+    high_low = high - low
+    high_prev = (high - prev_close).abs()
+    low_prev = (low - prev_close).abs()
+    tr = pd.concat([high_low, high_prev, low_prev], axis=1).max(axis=1)
+    atr_st = tr.rolling(window=atr_period, min_periods=1).mean()
+
+    # --- Базовые линии upper / lower ---
+    hl2 = (high + low) / 2.0
+    basic_ub = hl2 + multiplier * atr_st
+    basic_lb = hl2 - multiplier * atr_st
+
+    ub = basic_ub.to_numpy().copy()
+    lb = basic_lb.to_numpy().copy()
+    c = close.to_numpy()
+    n = len(df)
+
+    # финальные ленты по классическому алгоритму
+    for i in range(1, n):
+        # верхняя лента
+        if (basic_ub.iat[i] < ub[i - 1]) or (c[i - 1] > ub[i - 1]):
+            ub[i] = basic_ub.iat[i]
+        else:
+            ub[i] = ub[i - 1]
+
+        # нижняя лента
+        if (basic_lb.iat[i] > lb[i - 1]) or (c[i - 1] < lb[i - 1]):
+            lb[i] = basic_lb.iat[i]
+        else:
+            lb[i] = lb[i - 1]
+
+    st = np.full(n, np.nan, dtype=float)
+    direction = np.zeros(n, dtype=int)  # +1 = up, -1 = down
+
+    # инициализация
+    st[0] = ub[0]
+    direction[0] = -1 if c[0] < ub[0] else 1
+
+    for i in range(1, n):
+        prev_st = st[i - 1]
+        prev_ub = ub[i - 1]
+        prev_lb = lb[i - 1]
+
+        # предыдущий тренд вниз (линия = верхняя лента)
+        if prev_st == prev_ub:
+            if c[i] <= ub[i]:
+                st[i] = ub[i]
+                direction[i] = -1
+            else:
+                st[i] = lb[i]
+                direction[i] = 1
+        # предыдущий тренд вверх (линия = нижняя лента)
+        elif prev_st == prev_lb:
+            if c[i] >= lb[i]:
+                st[i] = lb[i]
+                direction[i] = 1
+            else:
+                st[i] = ub[i]
+                direction[i] = -1
+        else:
+            # на всякий случай fallback
+            st[i] = st[i - 1]
+            direction[i] = direction[i - 1]
+
+    st_series = pd.Series(st, index=df.index)
+
+    # --- CCI по typical price ---
+    tp = (high + low + close) / 3.0
+    sma_tp = tp.rolling(window=cci_period, min_periods=1).mean()
+    mean_dev = (tp - sma_tp).abs().rolling(window=cci_period, min_periods=1).mean()
+    denom = 0.015 * mean_dev.replace(0, np.nan)
+    cci = ((tp - sma_tp) / denom).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+
+    # --- Чтение outputs из конфигурации ---
+    outputs = cfg_st.outputs or {}
+
+    # Линии SuperTrend
+    st_tfs = outputs.get("supertrend_lines", [])
+    if working_tf in st_tfs:
+        df[f"st_{working_tf}"] = st_series
+        # направление тренда (по желанию, YAML об этом не знает, но это полезная фича)
+        df[f"st_dir_{working_tf}"] = direction
+
+    # CCI value
+    cci_cfg = outputs.get("cci_value", {}) or {}
+    if cci_cfg.get("enabled", False) and working_tf in (cci_cfg.get("tfs") or []):
+        df[f"cci_{working_tf}"] = cci
+
+    # CCI sign (-1/0/1)
+    cci_sign_cfg = outputs.get("cci_sign", {}) or {}
+    if cci_sign_cfg.get("enabled", False) and working_tf in (cci_sign_cfg.get("tfs") or []):
+        sign = np.sign(cci)
+        df[f"cci_sign_{working_tf}"] = sign
+
+    # Разности OHLC - SuperTrend
+    diffs_cfg = outputs.get("diffs", {}) or {}
+    if diffs_cfg.get("enabled", False) and working_tf in (diffs_cfg.get("tfs") or []):
+        ohlc_list = diffs_cfg.get("ohlc") or ["open", "high", "low", "close"]
+        for col in ohlc_list:
+            if col in df.columns:
+                df[f"{col}_minus_st_{working_tf}"] = df[col].astype(float) - st_series
+
 
