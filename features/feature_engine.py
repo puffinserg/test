@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence, Callable, Dict, Optional, List, Any
 from features.mtf_utils import resample_ohlc, align_higher_tf_to_working
-
+from features.indicators import compute_supertrend_and_cci
 
 import numpy as np
 import pandas as pd
@@ -51,7 +51,6 @@ TF_TO_MINUTES = {
     "D1": 1440,
 }
 
-
 def _tf_factor(tf: str, base_tf: str) -> float:
     """
     Во сколько раз tf «дольше» base_tf.
@@ -62,6 +61,16 @@ def _tf_factor(tf: str, base_tf: str) -> float:
     if base is None or cur is None:
         return 1.0
     return cur / base
+
+def _sort_tfs_by_tf_order(tfs: list[str]) -> list[str]:
+    """
+    Сортировка таймфреймов от младшего к старшему
+    (M1, M5, ..., H1, H4, D1) по TF_TO_MINUTES.
+    """
+    return sorted(
+        set(tfs),
+        key=lambda tf: TF_TO_MINUTES.get(tf, 10**9),
+    )
 
 def register_feature(
     name: str,
@@ -491,101 +500,6 @@ def feature_spread(df: pd.DataFrame, ctx: FeatureContext) -> None:
     else:
         df["spread_over_atr"] = 0.0
 
-def _compute_supertrend_and_cci(
-    df_ohlc: pd.DataFrame,
-    atr_period: int,
-    multiplier: float,
-    cci_period: int,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """
-    Общая реализация SuperTrend + CCI для произвольного OHLC-dataframe.
-    Возвращает:
-        st_series  – линия SuperTrend;
-        direction  – +1 / -1 (up / down);
-        cci_series – CCI по typical price.
-    """
-    high = df_ohlc["high"].astype(float)
-    low = df_ohlc["low"].astype(float)
-    close = df_ohlc["close"].astype(float)
-
-    # --- ATR для SuperTrend (локальный, независимый от "atr") ---
-    prev_close = close.shift(1)
-    high_low = high - low
-    high_prev = (high - prev_close).abs()
-    low_prev = (low - prev_close).abs()
-    tr = pd.concat([high_low, high_prev, low_prev], axis=1).max(axis=1)
-    atr_st = tr.rolling(window=atr_period, min_periods=1).mean()
-
-    # --- Базовые линии upper / lower ---
-    hl2 = (high + low) / 2.0
-    basic_ub = hl2 + multiplier * atr_st
-    basic_lb = hl2 - multiplier * atr_st
-
-    ub = basic_ub.to_numpy().copy()
-    lb = basic_lb.to_numpy().copy()
-    c = close.to_numpy()
-    n = len(df_ohlc)
-
-    # финальные ленты по классическому алгоритму
-    for i in range(1, n):
-        # верхняя лента
-        if (basic_ub.iat[i] < ub[i - 1]) or (c[i - 1] > ub[i - 1]):
-            ub[i] = basic_ub.iat[i]
-        else:
-            ub[i] = ub[i - 1]
-
-        # нижняя лента
-        if (basic_lb.iat[i] > lb[i - 1]) or (c[i - 1] < lb[i - 1]):
-            lb[i] = basic_lb.iat[i]
-        else:
-            lb[i] = lb[i - 1]
-
-    st = np.full(n, np.nan, dtype=float)
-    direction = np.zeros(n, dtype=int)  # +1 = up, -1 = down
-
-    # инициализация
-    st[0] = ub[0]
-    direction[0] = -1 if c[0] < ub[0] else 1
-
-    for i in range(1, n):
-        prev_st = st[i - 1]
-        prev_ub = ub[i - 1]
-        prev_lb = lb[i - 1]
-
-        # предыдущий тренд вниз (линия = верхняя лента)
-        if prev_st == prev_ub:
-            if c[i] <= ub[i]:
-                st[i] = ub[i]
-                direction[i] = -1
-            else:
-                st[i] = lb[i]
-                direction[i] = 1
-
-        # предыдущий тренд вверх (линия = нижняя лента)
-        elif prev_st == prev_lb:
-            if c[i] >= lb[i]:
-                st[i] = lb[i]
-                direction[i] = 1
-            else:
-                st[i] = ub[i]
-                direction[i] = -1
-        else:
-            # fallback на случай численных странностей
-            st[i] = st[i - 1]
-            direction[i] = direction[i - 1]
-
-    st_series = pd.Series(st, index=df_ohlc.index)
-    dir_series = pd.Series(direction, index=df_ohlc.index)
-
-    # --- CCI по typical price ---
-    tp = (high + low + close) / 3.0
-    sma_tp = tp.rolling(window=cci_period, min_periods=1).mean()
-    mean_dev = (tp - sma_tp).abs().rolling(window=cci_period, min_periods=1).mean()
-    denom = 0.015 * mean_dev.replace(0, np.nan)
-    cci = ((tp - sma_tp) / denom).replace([np.inf, -np.inf], 0.0).fillna(0.0)
-
-    return st_series, dir_series, cci
-
 @register_feature(
     "supertrend",
     default_enabled=False,
@@ -647,7 +561,9 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
 
     # какие TF вообще нужны для вычислений
     tfs_cfg = cfg_st.tfs or [working_tf]
-    active_tfs = sorted(set(st_tfs) | set(cci_tfs) | set(cci_sign_tfs) | set(diffs_tfs))
+    active_tfs = _sort_tfs_by_tf_order(
+        list(st_tfs) + list(cci_tfs) + list(cci_sign_tfs) + list(diffs_tfs)
+    )
     if not active_tfs:
         # ничего не запрошено в outputs — можно ничего не считать
         return
@@ -658,7 +574,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
 
     # --- 1) рабочий TF (без ресемплинга) ---
     if working_tf in active_tfs:
-        st_series, dir_series, cci_series = _compute_supertrend_and_cci(
+        st_series, dir_series, cci_series = compute_supertrend_and_cci(
             df, atr_period, multiplier, cci_period
         )
 
@@ -712,7 +628,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
             continue
 
         # 2.2. считаем SuperTrend/CCI на старшем TF
-        st_htf, dir_htf, cci_htf = _compute_supertrend_and_cci(
+        st_htf, dir_htf, cci_htf = compute_supertrend_and_cci(
             df_htf, atr_period, multiplier, cci_period
         )
 
