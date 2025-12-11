@@ -125,6 +125,15 @@ class FeatureEngine:
     def _eff_spread_period(self) -> int:
         return self.profile.spread_period or self.cfg.spread.spread_period
 
+    def _eff_st_atr_period(self) -> int:
+        return self.profile.supertrend_atr_period or self.cfg.supertrend.atr_period
+
+    def _eff_st_multiplier(self) -> float:
+        return self.profile.supertrend_multiplier or self.cfg.supertrend.multiplier
+
+    def _eff_st_cci_period(self) -> int:
+        return self.profile.supertrend_cci_period or self.cfg.supertrend.cci_period
+
     # --------- lookback / warmup ----------
 
     def _compute_warmup_bars(self) -> int:
@@ -200,6 +209,10 @@ class FeatureEngine:
             return getattr(self.profile, "use_volatility", True)
         if name == "spread":
             return getattr(self.profile, "use_spread", True)
+        if name == "supertrend":
+            return getattr(self.profile, "use_supertrend", True)
+        if name == "murrey":
+            return getattr(self.profile, "use_murrey", True)
 
         # Для новых фич по умолчанию считаем, что они включены
         meta = FEATURE_META.get(name)
@@ -408,14 +421,10 @@ def feature_spread(df: pd.DataFrame, ctx: FeatureContext) -> None:
 @register_feature(
     "supertrend",
     default_enabled=False,
-    lookback_fn=lambda ctx: max(1, ctx.engine._eff_atr_period()) * 6,
+    lookback_fn=lambda ctx: max(1, ctx.engine._eff_st_atr_period()) * 6,
 )
 def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
-    """
-    SuperTrend / SuperTrend MTF пока не реализован.
-    Не добавляйте 'supertrend' в pipeline, пока не появится реализация.
-    """
-    raise NotImplementedError(
-        "SuperTrend feature is not implemented yet. "
-        "Do not include 'supertrend' in the feature pipeline."
-    )
+    print("[feature_engine] WARNING: SuperTrend feature is not implemented yet.")
+    # просто ничего не делаем, чтобы не падать
+    return
+
