@@ -689,6 +689,11 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
         if tf != working_tf and tf in (tfs_cfg or [])
     ]
 
+    print("DEBUG MTF: active_tfs =", active_tfs)
+    print("DEBUG MTF: tfs_cfg    =", tfs_cfg)
+    print("DEBUG MTF: working_tf =", working_tf)
+    print("DEBUG MTF: higher_tfs =", higher_tfs)
+
     if not higher_tfs:
         return
 
@@ -737,9 +742,13 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
             continue
 
         # 2.4. подтягиваем фичи со старшего TF к рабочему через merge_asof
-        df[:] = align_higher_tf_to_working(df, df_feat_htf, cols)
+        merged = align_higher_tf_to_working(df, df_feat_htf, cols)
 
-        # 2.5. diffs для старшего TF (после merge, когда st_<tf> уже в df)
+        # добавляем НОВЫЕ колонки в текущий df
+        for col in cols:
+            df[col] = merged[col]
+
+        # 2.5. diffs для старшего TF (после того как st_<tf> уже добавлен)
         if diffs_enabled and tf in diffs_tfs and tf in st_tfs:
             st_col = f"st_{tf}"
             if st_col in df.columns:
@@ -747,7 +756,8 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
                 for col in diffs_ohlc:
                     if col in df.columns:
                         df[f"{col}_minus_st_{tf}"] = (
-                            df[col].astype(float) - st_series_aligned
+                                df[col].astype(float) - st_series_aligned
                         )
+
 
 
