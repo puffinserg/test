@@ -171,8 +171,8 @@ def run_training_loop(snapshot_path: Path) -> None:
 
     # последние 3 бара с базовыми полями
     print("\n[Training] Последние 3 бара окна (с базовыми полями):")
-    cols_base = [c for c in ("time", "open", "high", "low", "close") if c in df_feat.columns]
-    print(df_feat[cols_base].tail(3))
+    cols_base = [c for c in ("time", "open", "high", "low", "close", "st_H1", "st_H4", "st_D1") if c in df_feat.columns]
+    print(df_feat[cols_base].tail(5))
 
     # формируем вектор фич по последней строке
     feature_cols = [c for c in df_feat.columns if c not in cols_base]
