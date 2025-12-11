@@ -31,6 +31,23 @@ class ReturnsSettings:
 class SpreadSettings:
     spread_period: int = 20
 
+@dataclass
+class SuperTrendSettings:
+    enabled: bool = True
+    atr_period: int = 5
+    multiplier: float = 3.0
+    cci_period: int = 50
+    cci_price: str = "typical"
+    tfs: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
+    outputs: Dict[str, Any] = field(default_factory=dict)  # пока как сырой dict
+
+@dataclass
+class MurreySettings:
+    enabled: bool = True
+    period_bars: int = 64
+    tfs: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
+    outputs: Dict[str, Any] = field(default_factory=dict)
+
 # --- Профиль фич ---
 
 @dataclass
@@ -44,12 +61,17 @@ class FeatureProfileSettings:
     use_volatility: bool = True
     use_returns: bool = True
     use_spread: bool = True
+    use_supertrend: bool = True
+    use_murrey: bool = True
 
     atr_period: Optional[int] = None
     vol_period: Optional[int] = None
     short_periods: Optional[List[int]] = None
     ret_long_period: Optional[int] = None
     spread_period: Optional[int] = None
+    supertrend_atr_period: Optional[int] = None
+    supertrend_multiplier: Optional[float] = None
+    supertrend_cci_period: Optional[int] = None
 
 @dataclass
 class FeaturesSettings:
@@ -59,6 +81,10 @@ class FeaturesSettings:
     volatility: VolatilitySettings = field(default_factory=VolatilitySettings)
     returns: ReturnsSettings = field(default_factory=ReturnsSettings)
     spread: SpreadSettings = field(default_factory=SpreadSettings)
+    supertrend: SuperTrendSettings = field(default_factory=SuperTrendSettings)
+    murrey: MurreySettings = field(default_factory=MurreySettings)
+
+    pipeline: List[str] = field(default_factory=list)
 
     default_profile: str = "name1"
     profiles: Dict[str, FeatureProfileSettings] = field(default_factory=dict)
@@ -145,6 +171,26 @@ def load_settings(path: Path | None = None) -> Settings:
     vol = VolatilitySettings(**(feat_raw.get("volatility", {}) or {}))
     ret = ReturnsSettings(**(feat_raw.get("returns", {}) or {}))
     spr = SpreadSettings(**(feat_raw.get("spread", {}) or {}))
+    st_raw = feat_raw.get("supertrend", {}) or {}
+    supertrend = SuperTrendSettings(
+        enabled=st_raw.get("enabled", True),
+        atr_period=int(st_raw.get("atr_period", 5)),
+        multiplier=float(st_raw.get("multiplier", 3.0)),
+        cci_period=int(st_raw.get("cci_period", 50)),
+        cci_price=st_raw.get("cci_price", "typical"),
+        tfs=list(st_raw.get("tfs", ["H1", "H4", "D1"])),
+        outputs=st_raw.get("outputs", {}) or {},
+    )
+
+    mur_raw = feat_raw.get("murrey", {}) or {}
+    murrey = MurreySettings(
+        enabled=mur_raw.get("enabled", True),
+        period_bars=int(mur_raw.get("period_bars", 64)),
+        tfs=list(mur_raw.get("tfs", ["H1", "H4", "D1"])),
+        outputs=mur_raw.get("outputs", {}) or {},
+    )
+
+    pipeline = list(feat_raw.get("pipeline", []))
 
     default_profile = feat_raw.get("default_profile", "name1")
     profiles_raw = feat_raw.get("profiles", {}) or {}
@@ -162,6 +208,9 @@ def load_settings(path: Path | None = None) -> Settings:
             short_periods=cfg.get("short_periods"),
             ret_long_period=cfg.get("ret_long_period"),
             spread_period=cfg.get("spread_period"),
+            supertrend_atr_period=cfg.get("supertrend_atr_period"),
+            supertrend_multiplier=cfg.get("supertrend_multiplier"),
+            supertrend_cci_period=cfg.get("supertrend_cci_period"),
         )
 
     features = FeaturesSettings(
@@ -170,6 +219,9 @@ def load_settings(path: Path | None = None) -> Settings:
         volatility=vol,
         returns=ret,
         spread=spr,
+        supertrend=supertrend,
+        murrey=murrey,
+        pipeline=pipeline,
         default_profile=default_profile,
         profiles=profiles,
     )
