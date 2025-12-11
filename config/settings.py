@@ -64,6 +64,7 @@ class FeatureProfileSettings:
     use_supertrend: bool = True
     use_murrey: bool = True
 
+    # оверрайды базовых фич
     atr_period: Optional[int] = None
     vol_period: Optional[int] = None
     short_periods: Optional[List[int]] = None
@@ -194,8 +195,8 @@ def load_settings(path: Path | None = None) -> Settings:
 
     default_profile = feat_raw.get("default_profile", "name1")
     profiles_raw = feat_raw.get("profiles", {}) or {}
-
     profiles: Dict[str, FeatureProfileSettings] = {}
+
     for name, cfg in profiles_raw.items():
         cfg = cfg or {}
         profiles[name] = FeatureProfileSettings(
