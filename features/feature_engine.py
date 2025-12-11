@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Sequence, Callable, Dict, Optional, List, Any
+from features.mtf_utils import resample_ohlc, align_higher_tf_to_working
+
 
 import numpy as np
 import pandas as pd
@@ -489,53 +491,22 @@ def feature_spread(df: pd.DataFrame, ctx: FeatureContext) -> None:
     else:
         df["spread_over_atr"] = 0.0
 
-@register_feature(
-    "supertrend",
-    default_enabled=False,
-    lookback_fn=supertrend_lookback,
-)
-def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
+def _compute_supertrend_and_cci(
+    df_ohlc: pd.DataFrame,
+    atr_period: int,
+    multiplier: float,
+    cci_period: int,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
-    Реализация SuperTrend + CCI для рабочего таймфрейма.
-
-    Что делаем:
-    - считаем ATR c периодом supertrend_atr_period (из профиля или из cfg.supertrend);
-    - строим классический SuperTrend (верхняя/нижняя ленты + линия тренда);
-    - считаем CCI по typical price;
-    - в зависимости от settings.yaml создаём колонки:
-        st_<TF>, cci_<TF>, cci_sign_<TF>, <OHLC>_minus_st_<TF>.
-    Пока считаем только для рабочего ТФ (market.working_timeframe), MTF сделаем позже.
+    Общая реализация SuperTrend + CCI для произвольного OHLC-dataframe.
+    Возвращает:
+        st_series  – линия SuperTrend;
+        direction  – +1 / -1 (up / down);
+        cci_series – CCI по typical price.
     """
-    profile = ctx.profile
-    engine = ctx.engine
-    cfg_st = ctx.cfg.supertrend
-
-    # отключено профилем или глобально
-    if not getattr(profile, "use_supertrend", True):
-        return
-    if not cfg_st.enabled:
-        return
-
-    required_cols = {"high", "low", "close"}
-    if not required_cols.issubset(df.columns):
-        print("[feature_engine] WARNING: cannot compute SuperTrend – OHLC missing")
-        return
-
-    # Рабочий таймфрейм (например, "H1")
-    try:
-        from config.settings import SETTINGS  # уже импортирован выше, но страховка на случай refactor
-        working_tf = SETTINGS.market.working_timeframe
-    except Exception:
-        working_tf = "H1"
-
-    # --- Параметры из профиля / конфигурации ---
-    atr_period = engine._eff_st_atr_period()
-    multiplier = engine._eff_st_multiplier()
-    cci_period = engine._eff_st_cci_period()
-
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    close = df["close"].astype(float)
+    high = df_ohlc["high"].astype(float)
+    low = df_ohlc["low"].astype(float)
+    close = df_ohlc["close"].astype(float)
 
     # --- ATR для SuperTrend (локальный, независимый от "atr") ---
     prev_close = close.shift(1)
@@ -553,7 +524,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
     ub = basic_ub.to_numpy().copy()
     lb = basic_lb.to_numpy().copy()
     c = close.to_numpy()
-    n = len(df)
+    n = len(df_ohlc)
 
     # финальные ленты по классическому алгоритму
     for i in range(1, n):
@@ -589,6 +560,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
             else:
                 st[i] = lb[i]
                 direction[i] = 1
+
         # предыдущий тренд вверх (линия = нижняя лента)
         elif prev_st == prev_lb:
             if c[i] >= lb[i]:
@@ -598,11 +570,12 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
                 st[i] = ub[i]
                 direction[i] = -1
         else:
-            # на всякий случай fallback
+            # fallback на случай численных странностей
             st[i] = st[i - 1]
             direction[i] = direction[i - 1]
 
-    st_series = pd.Series(st, index=df.index)
+    st_series = pd.Series(st, index=df_ohlc.index)
+    dir_series = pd.Series(direction, index=df_ohlc.index)
 
     # --- CCI по typical price ---
     tp = (high + low + close) / 3.0
@@ -611,33 +584,170 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
     denom = 0.015 * mean_dev.replace(0, np.nan)
     cci = ((tp - sma_tp) / denom).replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
+    return st_series, dir_series, cci
+
+@register_feature(
+    "supertrend",
+    default_enabled=False,
+    lookback_fn=supertrend_lookback,
+)
+def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
+    """
+    SuperTrend + CCI с поддержкой MTF.
+
+    Делает:
+    - считает SuperTrend и CCI на рабочем TF (working_timeframe);
+    - при наличии старших TF в cfg.supertrend.tfs (H4, D1 и т.п.)
+      ресемплит OHLC через mtf_utils.resample_ohlc,
+      считает SuperTrend/CCI на старшем TF
+      и подтягивает значения на рабочий TF через align_higher_tf_to_working;
+    - создаёт колонки в соответствии с settings.yaml -> features.supertrend.outputs:
+        st_<TF>, st_dir_<TF>, cci_<TF>, cci_sign_<TF>, <OHLC>_minus_st_<TF>.
+    """
+    profile = ctx.profile
+    engine = ctx.engine
+    cfg_st = ctx.cfg.supertrend
+
+    # отключено профилем или глобально
+    if not getattr(profile, "use_supertrend", True):
+        return
+    if not cfg_st.enabled:
+        return
+
+    required_cols = {"time", "high", "low", "close", "open"}
+    if not required_cols.issubset(df.columns):
+        print("[feature_engine] WARNING: cannot compute SuperTrend – OHLC/time missing")
+        return
+
+    # Рабочий таймфрейм (например, "H1")
+    try:
+        working_tf = SETTINGS.market.working_timeframe
+    except Exception:
+        working_tf = "H1"
+
+    # --- Параметры из профиля / конфигурации ---
+    atr_period = engine._eff_st_atr_period()
+    multiplier = engine._eff_st_multiplier()
+    cci_period = engine._eff_st_cci_period()
+
     # --- Чтение outputs из конфигурации ---
     outputs = cfg_st.outputs or {}
 
-    # Линии SuperTrend
-    st_tfs = outputs.get("supertrend_lines", [])
-    if working_tf in st_tfs:
-        df[f"st_{working_tf}"] = st_series
-        # направление тренда (по желанию, YAML об этом не знает, но это полезная фича)
-        df[f"st_dir_{working_tf}"] = direction
-
-    # CCI value
+    st_tfs = outputs.get("supertrend_lines", []) or []
     cci_cfg = outputs.get("cci_value", {}) or {}
-    if cci_cfg.get("enabled", False) and working_tf in (cci_cfg.get("tfs") or []):
-        df[f"cci_{working_tf}"] = cci
+    cci_tfs = cci_cfg.get("tfs") or []
 
-    # CCI sign (-1/0/1)
     cci_sign_cfg = outputs.get("cci_sign", {}) or {}
-    if cci_sign_cfg.get("enabled", False) and working_tf in (cci_sign_cfg.get("tfs") or []):
-        sign = np.sign(cci)
-        df[f"cci_sign_{working_tf}"] = sign
+    cci_sign_tfs = cci_sign_cfg.get("tfs") or []
 
-    # Разности OHLC - SuperTrend
     diffs_cfg = outputs.get("diffs", {}) or {}
-    if diffs_cfg.get("enabled", False) and working_tf in (diffs_cfg.get("tfs") or []):
-        ohlc_list = diffs_cfg.get("ohlc") or ["open", "high", "low", "close"]
-        for col in ohlc_list:
-            if col in df.columns:
-                df[f"{col}_minus_st_{working_tf}"] = df[col].astype(float) - st_series
+    diffs_enabled = diffs_cfg.get("enabled", False)
+    diffs_tfs = diffs_cfg.get("tfs") or []
+    diffs_ohlc = diffs_cfg.get("ohlc") or ["open", "high", "low", "close"]
+
+    # какие TF вообще нужны для вычислений
+    tfs_cfg = cfg_st.tfs or [working_tf]
+    active_tfs = sorted(set(st_tfs) | set(cci_tfs) | set(cci_sign_tfs) | set(diffs_tfs))
+    if not active_tfs:
+        # ничего не запрошено в outputs — можно ничего не считать
+        return
+
+    # на всякий случай, если рабочий TF не указан явно, но используется где-то:
+    if working_tf in tfs_cfg and working_tf not in active_tfs:
+        active_tfs.append(working_tf)
+
+    # --- 1) рабочий TF (без ресемплинга) ---
+    if working_tf in active_tfs:
+        st_series, dir_series, cci_series = _compute_supertrend_and_cci(
+            df, atr_period, multiplier, cci_period
+        )
+
+        if working_tf in st_tfs:
+            df[f"st_{working_tf}"] = st_series
+            df[f"st_dir_{working_tf}"] = dir_series
+
+        if cci_cfg.get("enabled", False) and working_tf in cci_tfs:
+            df[f"cci_{working_tf}"] = cci_series
+
+        if cci_sign_cfg.get("enabled", False) and working_tf in cci_sign_tfs:
+            df[f"cci_sign_{working_tf}"] = np.sign(cci_series)
+
+        if diffs_enabled and working_tf in diffs_tfs and working_tf in st_tfs:
+            for col in diffs_ohlc:
+                if col in df.columns:
+                    df[f"{col}_minus_st_{working_tf}"] = (
+                        df[col].astype(float) - st_series
+                    )
+
+    # --- 2) старшие TF (H4, D1 и т.п.) через ресемплинг ---
+    # берём только те TF, которые:
+    #   а) присутствуют в cfg.supertrend.tfs,
+    #   б) реально нужны по outputs,
+    #   в) отличаются от working_tf.
+    higher_tfs = [
+        tf for tf in active_tfs
+        if tf != working_tf and tf in (tfs_cfg or [])
+    ]
+
+    if not higher_tfs:
+        return
+
+    # базовый df для ресемплинга
+    base_ohlc = df[["time", "open", "high", "low", "close"]].copy()
+
+    for tf in higher_tfs:
+        # 2.1. ресемплинг OHLC на старший TF
+        try:
+            df_htf = resample_ohlc(base_ohlc, tf)
+        except ValueError as e:
+            print(f"[feature_engine] WARNING: cannot resample to {tf}: {e}")
+            continue
+
+        if df_htf.empty:
+            continue
+
+        # 2.2. считаем SuperTrend/CCI на старшем TF
+        st_htf, dir_htf, cci_htf = _compute_supertrend_and_cci(
+            df_htf, atr_period, multiplier, cci_period
+        )
+
+        # 2.3. готовим таблицу фич старшего TF для merge_asof
+        cols = []
+        df_feat_htf = df_htf[["time"]].copy()
+
+        if tf in st_tfs:
+            col_st = f"st_{tf}"
+            col_dir = f"st_dir_{tf}"
+            df_feat_htf[col_st] = st_htf
+            df_feat_htf[col_dir] = dir_htf
+            cols.extend([col_st, col_dir])
+
+        if cci_cfg.get("enabled", False) and tf in cci_tfs:
+            col_cci = f"cci_{tf}"
+            df_feat_htf[col_cci] = cci_htf
+            cols.append(col_cci)
+
+        if cci_sign_cfg.get("enabled", False) and tf in cci_sign_tfs:
+            col_cci_sign = f"cci_sign_{tf}"
+            df_feat_htf[col_cci_sign] = np.sign(cci_htf)
+            cols.append(col_cci_sign)
+
+        if not cols:
+            # для этого TF ничего не нужно
+            continue
+
+        # 2.4. подтягиваем фичи со старшего TF к рабочему через merge_asof
+        df[:] = align_higher_tf_to_working(df, df_feat_htf, cols)
+
+        # 2.5. diffs для старшего TF (после merge, когда st_<tf> уже в df)
+        if diffs_enabled and tf in diffs_tfs and tf in st_tfs:
+            st_col = f"st_{tf}"
+            if st_col in df.columns:
+                st_series_aligned = df[st_col].astype(float)
+                for col in diffs_ohlc:
+                    if col in df.columns:
+                        df[f"{col}_minus_st_{tf}"] = (
+                            df[col].astype(float) - st_series_aligned
+                        )
 
 
