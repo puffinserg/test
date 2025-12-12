@@ -109,10 +109,12 @@ features:
       supertrend_cci_period: 50
       supertrend_tfs_override: ["H1", "H4", "D1"]  # опционально
 
-      murrey.outputs.levels: false      # уровни не кормим в сеть
-      murrey.outputs.distances: true
-      murrey.outputs.zone: true
-      murrey.outputs.pos_in_zone: true
+      murrey:
+        outputs:
+          levels: false
+          distances: true
+          zone: true
+          pos_in_zone: true
 
     name2:
       use_atr: true
