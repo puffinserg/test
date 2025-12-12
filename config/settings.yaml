@@ -76,23 +76,15 @@ features:
   murrey:
     enabled: true
     period_bars: 64
-    tfs:
-      - H1
-      - H4
-      - D1
-
+    include_extremes: true
+    tfs: [ "H1", "H4", "D1" ]
     outputs:
       levels: true      # сами уровни 0/8..8/8
       distances: true   # расстояния до ближайших уровней / зон
       zone: true          # murrey_zone
       pos_in_zone: true   # murrey_pos_in_zone
 
-  pipeline:
-    - atr
-    - returns
-    - volatility
-    - spread
-    - supertrend
+  pipeline: ["atr", "returns", "volatility", "spread", "supertrend", "murrey"]
 
   default_profile: "name1"
 
