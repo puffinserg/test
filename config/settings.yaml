@@ -75,9 +75,7 @@ features:
 
   murrey:
     enabled: true
-
     period_bars: 64
-
     tfs:
       - H1
       - H4
@@ -86,6 +84,8 @@ features:
     outputs:
       levels: true      # сами уровни 0/8..8/8
       distances: true   # расстояния до ближайших уровней / зон
+      zone: true          # murrey_zone
+      pos_in_zone: true   # murrey_pos_in_zone
 
   pipeline:
     - atr
@@ -115,7 +115,12 @@ features:
       supertrend_atr_period: 5           # если совпадают с дефолтом – можно не указывать
       supertrend_multiplier: 3.0
       supertrend_cci_period: 50
-      # supertrend_tfs_override: ["H1", "H4", "D1"]  # опционально
+      supertrend_tfs_override: ["H1", "H4", "D1"]  # опционально
+
+      murrey.outputs.levels: false      # уровни не кормим в сеть
+      murrey.outputs.distances: true
+      murrey.outputs.zone: true
+      murrey.outputs.pos_in_zone: true
 
     name2:
       use_atr: true
