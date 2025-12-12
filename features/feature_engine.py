@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence, Callable, Dict, Optional, List, Any
 from features.mtf_utils import resample_ohlc, align_higher_tf_to_working
+from features.indicators import compute_murrey_grid
 from features.indicators import (
     compute_supertrend_and_cci,
     compute_atr,
@@ -430,7 +431,6 @@ def feature_returns(df: pd.DataFrame, ctx: FeatureContext) -> None:
     for col, series in returns_dict.items():
         df[col] = series
 
-
 @register_feature(
     "volatility",
     default_enabled=True,
@@ -451,7 +451,6 @@ def feature_volatility(df: pd.DataFrame, ctx: FeatureContext) -> None:
 
     period = engine._eff_vol_period()
     df["volatility"] = compute_volatility(df["close"], period)
-
 
 @register_feature(
     "spread",
@@ -664,6 +663,105 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
                         df[f"{col}_minus_st_{tf}"] = (
                                 df[col].astype(float) - st_series_aligned
                         )
+@register_feature(
+    "murrey",
+    default_enabled=False,
+    lookback_fn=murrey_lookback,
+)
+def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
+    profile = ctx.profile
+    engine = ctx.engine
+    cfg_m = ctx.cfg.murrey
+
+    if not getattr(profile, "use_murrey", True):
+        return
+    if not cfg_m.enabled:
+        return
+
+    required_cols = {"time", "open", "high", "low", "close"}
+    if not required_cols.issubset(df.columns):
+        print("[feature_engine] WARNING: cannot compute Murrey – OHLC/time missing")
+        return
+
+    try:
+        working_tf = SETTINGS.market.working_timeframe
+    except Exception:
+        working_tf = "H1"
+
+    period_bars = cfg_m.period_bars
+    include_extremes = getattr(cfg_m, "include_extremes", True)
+
+    outputs = cfg_m.outputs or {}
+    out_levels = bool(outputs.get("levels", True))
+    out_dist = bool(outputs.get("distances", True))
+    out_zone = bool(outputs.get("zone", True))
+    out_pos = bool(outputs.get("pos_in_zone", True))
+
+    tfs_cfg = cfg_m.tfs or [working_tf]
+    # хотим от младшего к старшему
+    active_tfs = _sort_tfs_by_tf_order(tfs_cfg)
+
+    base_ohlc = df[["time", "open", "high", "low", "close"]].copy()
+
+    def _emit(tf: str, target_df: pd.DataFrame, mur: dict[str, pd.Series]) -> None:
+        # уровни
+        if out_levels:
+            # уровни 0..8 всегда
+            for i in range(0, 9):
+                target_df[f"mur_{i}_8_{tf}"] = mur[f"mur_{i}_8"]
+            # экстремы -2,-1,9,10 если включено
+            if include_extremes:
+                for i in (-2, -1, 9, 10):
+                    key = f"mur_{i}_8"
+                    if key in mur:
+                        target_df[f"mur_{i}_8_{tf}"] = mur[key]
+
+        # зона/позиция
+        if out_zone:
+            target_df[f"mur_zone_{tf}"] = mur["mur_zone"]
+        if out_pos:
+            target_df[f"mur_pos_in_zone_{tf}"] = mur["mur_pos_in_zone"]
+
+        # distances
+        if out_dist:
+            target_df[f"mur_nearest_idx_{tf}"] = mur["mur_nearest_idx"]
+            target_df[f"mur_dist_close_to_nearest_{tf}"] = mur["mur_dist_close_to_nearest"]
+            target_df[f"mur_dist_close_to_0_8_{tf}"] = mur["mur_dist_close_to_0_8"]
+            target_df[f"mur_dist_close_to_4_8_{tf}"] = mur["mur_dist_close_to_4_8"]
+            target_df[f"mur_dist_close_to_8_8_{tf}"] = mur["mur_dist_close_to_8_8"]
+
+    # 1) working TF (без ресемплинга)
+    if working_tf in active_tfs:
+        mur = compute_murrey_grid(df, period_bars=period_bars, include_extremes=include_extremes)
+        _emit(working_tf, df, mur)
+
+    # 2) higher TF через ресемплинг + merge_asof
+    higher_tfs = [tf for tf in active_tfs if tf != working_tf]
+    for tf in higher_tfs:
+        try:
+            df_htf = resample_ohlc(base_ohlc, tf)
+        except ValueError as e:
+            print(f"[feature_engine] WARNING: cannot resample to {tf}: {e}")
+            continue
+        if df_htf.empty:
+            continue
+
+        mur_htf = compute_murrey_grid(df_htf, period_bars=period_bars, include_extremes=include_extremes)
+
+        # формируем df_feat_htf только с нужными колонками
+        df_feat_htf = df_htf[["time"]].copy()
+        cols = []
+
+        # временно “emit” в df_feat_htf, затем merge и подставим в df
+        _emit(tf, df_feat_htf, mur_htf)
+        cols = [c for c in df_feat_htf.columns if c != "time"]
+
+        if not cols:
+            continue
+
+        merged = align_higher_tf_to_working(df, df_feat_htf, cols)
+        for c in cols:
+            df[c] = merged[c]
 
 
 
