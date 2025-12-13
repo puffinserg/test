@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, fields
 from typing import Sequence, Callable, Dict, Optional, List, Any
 from features.mtf_utils import resample_ohlc, align_higher_tf_to_working
 from features.indicators import compute_murrey_grid
@@ -16,6 +16,7 @@ from features.indicators import (
 
 import numpy as np
 import pandas as pd
+import copy
 
 from config.settings import SETTINGS, FeaturesSettings, FeatureProfileSettings
 
@@ -151,6 +152,62 @@ def murrey_lookback(ctx: FeatureContext) -> int:
 
     lookback = int(base_lookback * max_factor)
     return max(1, lookback)
+
+def _deep_merge_into_dataclass(dst_obj: Any, patch: Dict[str, Any]) -> None:
+    """
+    Рекурсивно накатывает patch (dict) на dataclass/dict-структуры внутри dst_obj.
+    - dataclass: патчит поля по имени
+    - dict: deep merge по ключам
+    - list/scalar: замена целиком
+    """
+    if patch is None:
+        return
+    if not isinstance(patch, dict):
+        # если профилем пришло “не dict”, ничего не делаем (безопасно)
+        return
+
+    # dataclass case
+    if is_dataclass(dst_obj):
+        field_map = {f.name: f for f in fields(dst_obj)}
+        for k, v in patch.items():
+            if k not in field_map:
+                # неизвестные ключи игнорируем (можно логировать при verbose)
+                continue
+            cur = getattr(dst_obj, k)
+
+            if is_dataclass(cur) and isinstance(v, dict):
+                _deep_merge_into_dataclass(cur, v)
+            elif isinstance(cur, dict) and isinstance(v, dict):
+                _deep_merge_into_dict(cur, v)
+            else:
+                # scalar/list/dict replacement
+                setattr(dst_obj, k, copy.deepcopy(v))
+        return
+
+    # dict case
+    if isinstance(dst_obj, dict):
+        _deep_merge_into_dict(dst_obj, patch)
+
+
+def _deep_merge_into_dict(dst: Dict[str, Any], patch: Dict[str, Any]) -> None:
+    for k, v in patch.items():
+        if k in dst and isinstance(dst[k], dict) and isinstance(v, dict):
+            _deep_merge_into_dict(dst[k], v)
+        else:
+            dst[k] = copy.deepcopy(v)
+
+
+def apply_profile_feature_overrides(cfg: Any, profile: Any) -> None:
+    """
+    Накатывает profile.overrides только на cfg.features.*.
+    Ожидает, что overrides имеет вид:
+      { "murrey": {...}, "supertrend": {...}, ... }
+    """
+    overrides = getattr(profile, "overrides", None)
+    if not overrides:
+        return
+    # Накатываем только то, что относится к features.*
+    _deep_merge_into_dataclass(cfg.features, overrides)
 
 # ---------- Вспомогательная обёртка над SETTINGS.features (опционально) ----------
 
