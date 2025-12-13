@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -6,31 +7,29 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 SETTINGS_FILE = Path(__file__).with_name("settings.yaml")
 
 
 # ---------- Секции настроек ----------
+
 @dataclass
 class AtrSettings:
     atr_period: int = 14
 
-
 @dataclass
 class VolatilitySettings:
     vol_period: int = 20
-
 
 @dataclass
 class ReturnsSettings:
     short_periods: List[int] = field(default_factory=lambda: [1, 5])
     ret_long_period: int = 5
 
-
 @dataclass
 class SpreadSettings:
     spread_period: int = 20
-
 
 @dataclass
 class SuperTrendSettings:
@@ -40,8 +39,7 @@ class SuperTrendSettings:
     cci_period: int = 50
     cci_price: str = "typical"
     tfs: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
-    outputs: Dict[str, Any] = field(default_factory=dict)  # сырой dict (как в YAML)
-
+    outputs: Dict[str, Any] = field(default_factory=dict)  # пока как сырой dict
 
 @dataclass
 class MurreySettings:
@@ -49,24 +47,17 @@ class MurreySettings:
     period_bars: int = 64
     include_extremes: bool = True
     tfs: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
-    outputs: Dict[str, Any] = field(default_factory=dict)  # сырой dict (как в YAML)
-
+    outputs: Dict[str, Any] = field(default_factory=dict)
 
 # --- Профиль фич ---
+
 @dataclass
 class FeatureProfileSettings:
     """
     Профиль фич (name1, name2, ...):
     - какие блоки использовать;
-    - локальные переопределения периодов (если надо);
-    - overrides: любые вложенные переопределения вида:
-        murrey:
-          outputs: ...
-        supertrend:
-          outputs: ...
-      которые будут "merge" поверх FeaturesSettings в feature_engine.py
+    - при желании – локальные переопределения периодов.
     """
-
     use_atr: bool = True
     use_volatility: bool = True
     use_returns: bool = True
@@ -80,7 +71,6 @@ class FeatureProfileSettings:
     short_periods: Optional[List[int]] = None
     ret_long_period: Optional[int] = None
     spread_period: Optional[int] = None
-
     supertrend_atr_period: Optional[int] = None
     supertrend_multiplier: Optional[float] = None
     supertrend_cci_period: Optional[int] = None
@@ -96,16 +86,16 @@ class FeaturesSettings:
     volatility: VolatilitySettings = field(default_factory=VolatilitySettings)
     returns: ReturnsSettings = field(default_factory=ReturnsSettings)
     spread: SpreadSettings = field(default_factory=SpreadSettings)
-
     supertrend: SuperTrendSettings = field(default_factory=SuperTrendSettings)
     murrey: MurreySettings = field(default_factory=MurreySettings)
 
     pipeline: List[str] = field(default_factory=list)
+
     default_profile: str = "name1"
     profiles: Dict[str, FeatureProfileSettings] = field(default_factory=dict)
 
-
 # --- Корневой SETTINGS ---
+
 @dataclass
 class MarketSettings:
     symbol: str = "EURUSD"
@@ -113,12 +103,10 @@ class MarketSettings:
     working_timeframe: str = "H1"
     n_bars_master: int = 70000
 
-
 @dataclass
 class PathsSettings:
     master_pattern: str = "{symbol}_{tf}_master.parquet"
     snapshot_pattern: str = "{symbol}_{tf}_{role}_snapshot_{start}_{end}.parquet"
-
 
 @dataclass
 class DukascopySettings:
@@ -128,7 +116,6 @@ class DukascopySettings:
     external_dir: str = "data/external"
     price_divisor: int = 100000
 
-
 @dataclass
 class Settings:
     market: MarketSettings = field(default_factory=MarketSettings)
@@ -136,14 +123,13 @@ class Settings:
     dukascopy: DukascopySettings = field(default_factory=DukascopySettings)
     features: FeaturesSettings = field(default_factory=FeaturesSettings)
 
-
 # ---------- Загрузка YAML ----------
+
 def _load_yaml(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Settings file not found: {path}")
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
-
 
 def load_settings(path: Path | None = None) -> Settings:
     if path is None:
@@ -156,7 +142,10 @@ def load_settings(path: Path | None = None) -> Settings:
     market = MarketSettings(
         symbol=m.get("symbol", "EURUSD"),
         timeframe=m.get("timeframe", "M1"),
-        working_timeframe=m.get("working_timeframe", m.get("timeframe", "M1")),
+        working_timeframe=m.get(
+            "working_timeframe",
+            m.get("timeframe", "M1"),
+        ),
         n_bars_master=int(m.get("n_bars_master", 70_000)),
     )
 
@@ -164,7 +153,10 @@ def load_settings(path: Path | None = None) -> Settings:
     p = raw.get("paths", {}) or {}
     paths = PathsSettings(
         master_pattern=p.get("master_pattern", "{symbol}_{tf}_master.parquet"),
-        snapshot_pattern=p.get("snapshot_pattern", "{symbol}_{tf}_{role}_snapshot_{start}_{end}.parquet"),
+        snapshot_pattern=p.get(
+            "snapshot_pattern",
+            "{symbol}_{tf}_{role}_snapshot_{start}_{end}.parquet",
+        ),
     )
 
     # --- dukascopy ---
@@ -184,7 +176,6 @@ def load_settings(path: Path | None = None) -> Settings:
     vol = VolatilitySettings(**(feat_raw.get("volatility", {}) or {}))
     ret = ReturnsSettings(**(feat_raw.get("returns", {}) or {}))
     spr = SpreadSettings(**(feat_raw.get("spread", {}) or {}))
-
     st_raw = feat_raw.get("supertrend", {}) or {}
     supertrend = SuperTrendSettings(
         enabled=st_raw.get("enabled", True),
@@ -206,8 +197,8 @@ def load_settings(path: Path | None = None) -> Settings:
     )
 
     pipeline = list(feat_raw.get("pipeline", []))
-    default_profile = feat_raw.get("default_profile", "name1")
 
+    default_profile = feat_raw.get("default_profile", "name1")
     profiles_raw = feat_raw.get("profiles", {}) or {}
     profiles: Dict[str, FeatureProfileSettings] = {}
 
@@ -216,12 +207,11 @@ def load_settings(path: Path | None = None) -> Settings:
 
         known_keys = {
             "use_atr", "use_volatility", "use_returns", "use_spread",
-            "use_supertrend", "use_murrey",
             "atr_period", "vol_period", "short_periods", "ret_long_period", "spread_period",
             "supertrend_atr_period", "supertrend_multiplier", "supertrend_cci_period",
         }
 
-        # всё остальное сохраняем как raw overrides (murrey: {...}, supertrend: {...}, ...)
+        # всё остальное сохраняем как “raw overrides” (например murrey: {outputs: ...}, supertrend: {outputs: ...})
         overrides = {k: v for k, v in cfg.items() if k not in known_keys}
 
         profiles[name] = FeatureProfileSettings(
@@ -229,19 +219,14 @@ def load_settings(path: Path | None = None) -> Settings:
             use_volatility=cfg.get("use_volatility", True),
             use_returns=cfg.get("use_returns", True),
             use_spread=cfg.get("use_spread", True),
-            use_supertrend=cfg.get("use_supertrend", True),
-            use_murrey=cfg.get("use_murrey", True),
-
             atr_period=cfg.get("atr_period"),
             vol_period=cfg.get("vol_period"),
             short_periods=cfg.get("short_periods"),
             ret_long_period=cfg.get("ret_long_period"),
             spread_period=cfg.get("spread_period"),
-
             supertrend_atr_period=cfg.get("supertrend_atr_period"),
             supertrend_multiplier=cfg.get("supertrend_multiplier"),
             supertrend_cci_period=cfg.get("supertrend_cci_period"),
-
             overrides=overrides,
         )
 
@@ -264,7 +249,6 @@ def load_settings(path: Path | None = None) -> Settings:
         dukascopy=dukascopy,
         features=features,
     )
-
 
 # Глобальный объект настроек
 SETTINGS: Settings = load_settings()
