@@ -122,6 +122,10 @@ class Settings:
     paths: PathsSettings = field(default_factory=PathsSettings)
     dukascopy: DukascopySettings = field(default_factory=DukascopySettings)
     features: FeaturesSettings = field(default_factory=FeaturesSettings)
+    # --- data source switching ---
+    data_source: str = "dukascopy"  # "dukascopy" | "mt5"
+    data_layout: Dict[str, Any] = field(default_factory=dict)
+    sources: Dict[str, Any] = field(default_factory=dict)
 
 # ---------- Загрузка YAML ----------
 
@@ -136,6 +140,11 @@ def load_settings(path: Path | None = None) -> Settings:
         path = SETTINGS_FILE
 
     raw = _load_yaml(path)
+
+    # --- data source switching ---
+    data_source = str(raw.get("data_source", "dukascopy")).strip().lower()
+    data_layout = raw.get("data_layout", {}) or {}
+    sources = raw.get("sources", {}) or {}
 
     # --- market ---
     m = raw.get("market", {}) or {}
@@ -250,6 +259,9 @@ def load_settings(path: Path | None = None) -> Settings:
         paths=paths,
         dukascopy=dukascopy,
         features=features,
+        data_source=data_source,
+        data_layout = data_layout,
+        sources = sources,
     )
 
 # Глобальный объект настроек
