@@ -1,17 +1,15 @@
 market:
-  symbol: "EURUSD"      # Можно менять на GBPUSD, XAUUSD и т.п.
-  timeframe: "M1"       # master-история, всегда M1
-  working_timeframe: "H1"  # РАБОЧИЙ ТФ для снапшотов/обучения
-  n_bars_master: 70000  # Сколько баров тянуть в master при первичной загрузке
+  symbol: "EURUSD"
+  timeframe: "M1"             # master-история, всегда M1
+  working_timeframe: "H1"     # рабочий ТФ для снапшотов/обучения
+  n_bars_master: 70000
 
 paths:
   master_pattern: "{symbol}_{tf}_master.parquet"
   snapshot_pattern: "{symbol}_{tf}_{role}_snapshot_{start}_{end}.parquet"
-#имя счёта / сервер,
-#настройки для LIVE,
-#параметры RL.
 
-data_source: "mt5"   # "dukascopy" | "mt5"
+# Выбор источника данных: влияет на директории external/master/snapshots
+data_source: "mt5"            # "dukascopy" | "mt5"
 
 data_layout:
   external_root: "data/external"
@@ -29,66 +27,44 @@ sources:
     snapshots_dir: "mt5"
 
 dukascopy:
-
-  symbol: null  # если null — использовать market.symbol
-  start_year: 2010  # с какого года качать историю
-  years: 15  # сколько лет максимум (чтобы не выкачать случайно весь XX век)
-  external_dir: "data/external"   # каталог, куда складывать годовые parquet
-  price_divisor: 100000   # для EURUSD/GBPUSD и т.п. 1.12345 = 112345 / 1e5
+  symbol: null                # если null — использовать market.symbol
+  start_year: 2010
+  years: 15
+  external_dir: "data/external"   # legacy; будет игнорироваться при data_layout/sources
+  price_divisor: 100000
 
 features:
   window_size: 128
 
   atr:
     atr_period: 14
-
   volatility:
     vol_period: 20
-
   returns:
     short_periods: [1, 5]
     ret_long_period: 5
-
   spread:
     spread_period: 20
 
   supertrend:
     enabled: true
-
-    # базовые (дефолтные) параметры SuperTrend
     atr_period: 5
     multiplier: 3.0
     cci_period: 50
-    cci_price: typical   # если не хочешь усложнять – можно зафиксировать
-
-    # На каких TF считаем SuperTrend
-    tfs:
-      - H1
-      - H4
-      - D1
-
+    cci_price: typical
+    tfs: [ "H1", "H4", "D1" ]
     outputs:
-      # линии SuperTrend по TF
-      supertrend_lines:
-        - H1
-        - H4
-        - D1
-
-      # CCI как отдельная фича
+      supertrend_lines: [ "H1", "H4", "D1" ]
       cci_value:
         enabled: true
-        tfs: ["H1"]
-
-      # знак CCI (-1/0/1 или bool)
+        tfs: [ "H1" ]
       cci_sign:
         enabled: true
-        tfs: ["H1", "H4", "D1"]
-
-      # разности OHLC - SuperTrend
+        tfs: [ "H1", "H4", "D1" ]
       diffs:
         enabled: true
-        ohlc: ["open", "high", "low", "close"]
-        tfs: ["H1", "H4", "D1"]
+        ohlc: [ "open", "high", "low", "close" ]
+        tfs: [ "H1", "H4", "D1" ]
 
   murrey:
     enabled: true
@@ -96,13 +72,12 @@ features:
     include_extremes: true
     tfs: [ "H1", "H4", "D1" ]
     outputs:
-      levels: true      # сами уровни 0/8..8/8
-      distances: true   # расстояния до ближайших уровней / зон
-      zone: true          # murrey_zone
-      pos_in_zone: true   # murrey_pos_in_zone
+      levels: true
+      distances: true
+      zone: true
+      pos_in_zone: true
 
   pipeline: ["atr", "returns", "volatility", "spread", "supertrend", "murrey"]
-
   default_profile: "name1"
 
   profiles:
@@ -114,17 +89,15 @@ features:
       use_supertrend: true
       use_murrey: true
 
-      # Профильные оверрайды (если ≠ дефолта)
       atr_period: 14
       vol_period: 20
       short_periods: [1, 5]
       ret_long_period: 5
       spread_period: 20
 
-      supertrend_atr_period: 5           # если совпадают с дефолтом – можно не указывать
+      supertrend_atr_period: 5
       supertrend_multiplier: 3.0
       supertrend_cci_period: 50
-      supertrend_tfs_override: ["H1", "H4", "D1"]  # опционально
 
       murrey:
         outputs:
@@ -147,6 +120,6 @@ features:
       ret_long_period: 10
       spread_period: 20
 
-      supertrend_atr_period: 7           # пример, отличающийся от дефолта
+      supertrend_atr_period: 7
       supertrend_multiplier: 2.5
       supertrend_cci_period: 50
