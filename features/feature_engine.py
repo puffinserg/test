@@ -207,7 +207,7 @@ def apply_profile_feature_overrides(cfg: Any, profile: Any) -> None:
     if not overrides:
         return
     # Накатываем только то, что относится к features.*
-    _deep_merge_into_dataclass(cfg_features, overrides)
+    _deep_merge_into_dataclass(cfg, overrides)
 
 # ---------- Вспомогательная обёртка над SETTINGS.features (опционально) ----------
 
@@ -820,6 +820,3 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
         merged = align_higher_tf_to_working(df, df_feat_htf, cols)
         for c in cols:
             df[c] = merged[c]
-
-
-
