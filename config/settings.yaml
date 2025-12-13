@@ -11,6 +11,23 @@ paths:
 #настройки для LIVE,
 #параметры RL.
 
+data_source: "mt5"   # "dukascopy" | "mt5"
+
+data_layout:
+  external_root: "data/external"
+  master_root: "data/master"
+  snapshots_root: "data/snapshots"
+
+sources:
+  dukascopy:
+    external_dir: "dukascopy"
+    master_dir: "dukascopy"
+    snapshots_dir: "dukascopy"
+  mt5:
+    external_dir: "mt5"
+    master_dir: "mt5"
+    snapshots_dir: "mt5"
+
 dukascopy:
 
   symbol: null  # если null — использовать market.symbol
