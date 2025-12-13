@@ -207,7 +207,7 @@ def apply_profile_feature_overrides(cfg: Any, profile: Any) -> None:
     if not overrides:
         return
     # Накатываем только то, что относится к features.*
-    _deep_merge_into_dataclass(cfg.features, overrides)
+    _deep_merge_into_dataclass(cfg_features, overrides)
 
 # ---------- Вспомогательная обёртка над SETTINGS.features (опционально) ----------
 
@@ -255,6 +255,7 @@ class FeatureEngine:
         self.profile: FeatureProfileSettings = cfg.profiles.get(
             self.profile_name, FeatureProfileSettings()
         )
+        apply_profile_feature_overrides(self.cfg, self.profile)
 
     # --------- эффективные параметры ---------
 
