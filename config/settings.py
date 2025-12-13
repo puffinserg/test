@@ -45,6 +45,7 @@ class SuperTrendSettings:
 class MurreySettings:
     enabled: bool = True
     period_bars: int = 64
+    include_extremes: bool = True
     tfs: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
     outputs: Dict[str, Any] = field(default_factory=dict)
 
@@ -187,6 +188,7 @@ def load_settings(path: Path | None = None) -> Settings:
     murrey = MurreySettings(
         enabled=mur_raw.get("enabled", True),
         period_bars=int(mur_raw.get("period_bars", 64)),
+        include_extremes=bool(mur_raw.get("include_extremes", True)),
         tfs=list(mur_raw.get("tfs", ["H1", "H4", "D1"])),
         outputs=mur_raw.get("outputs", {}) or {},
     )
