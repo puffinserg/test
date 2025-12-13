@@ -208,7 +208,7 @@ def load_settings(path: Path | None = None) -> Settings:
         known_keys = {
             "use_atr", "use_volatility", "use_returns", "use_spread",
             "atr_period", "vol_period", "short_periods", "ret_long_period", "spread_period",
-            "supertrend_atr_period", "supertrend_multiplier", "supertrend_cci_period",
+            "supertrend_atr_period", "supertrend_multiplier", "supertrend_cci_period", "use_supertrend", "use_murrey",
         }
 
         # всё остальное сохраняем как “raw overrides” (например murrey: {outputs: ...}, supertrend: {outputs: ...})
@@ -219,6 +219,8 @@ def load_settings(path: Path | None = None) -> Settings:
             use_volatility=cfg.get("use_volatility", True),
             use_returns=cfg.get("use_returns", True),
             use_spread=cfg.get("use_spread", True),
+            use_supertrend=cfg.get("use_supertrend", True),
+            use_murrey=cfg.get("use_murrey", True),
             atr_period=cfg.get("atr_period"),
             vol_period=cfg.get("vol_period"),
             short_periods=cfg.get("short_periods"),
