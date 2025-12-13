@@ -8,6 +8,10 @@ paths:
   master_pattern: "{symbol}_{tf}_master.parquet"
   snapshot_pattern: "{symbol}_{tf}_{role}_snapshot_{start}_{end}.parquet"
 
+#имя счёта / сервер,
+#настройки для LIVE,
+#параметры RL.
+
 # Выбор источника данных: влияет на директории external/master/snapshots
 data_source: "mt5"            # "dukascopy" | "mt5"
 
@@ -48,20 +52,21 @@ features:
 
   supertrend:
     enabled: true
+    # базовые (дефолтные) параметры SuperTrend
     atr_period: 5
     multiplier: 3.0
     cci_period: 50
     cci_price: typical
-    tfs: [ "H1", "H4", "D1" ]
+    tfs: [ "H1", "H4", "D1" ] # На каких TF считаем SuperTrend
     outputs:
-      supertrend_lines: [ "H1", "H4", "D1" ]
-      cci_value:
+      supertrend_lines: [ "H1", "H4", "D1" ]  # линии SuperTrend по TF
+      cci_value:    # CCI как отдельная фича
         enabled: true
         tfs: [ "H1" ]
-      cci_sign:
+      cci_sign:         # знак CCI (-1/0/1 или bool)
         enabled: true
         tfs: [ "H1", "H4", "D1" ]
-      diffs:
+      diffs:    # разности OHLC - SuperTrend
         enabled: true
         ohlc: [ "open", "high", "low", "close" ]
         tfs: [ "H1", "H4", "D1" ]
@@ -72,10 +77,10 @@ features:
     include_extremes: true
     tfs: [ "H1", "H4", "D1" ]
     outputs:
-      levels: true
-      distances: true
-      zone: true
-      pos_in_zone: true
+      levels: true        # сами уровни 0/8..8/8
+      distances: true     # расстояния до ближайших уровней / зон
+      zone: true          # murrey_zone
+      pos_in_zone: true   # murrey_pos_in_zone
 
   pipeline: ["atr", "returns", "volatility", "spread", "supertrend", "murrey"]
   default_profile: "name1"
@@ -88,14 +93,14 @@ features:
       use_spread: true
       use_supertrend: true
       use_murrey: true
-
+      # Профильные оверрайды (если ≠ дефолта)
       atr_period: 14
       vol_period: 20
       short_periods: [1, 5]
       ret_long_period: 5
       spread_period: 20
 
-      supertrend_atr_period: 5
+      supertrend_atr_period: 5    # если совпадают с дефолтом – можно не указывать
       supertrend_multiplier: 3.0
       supertrend_cci_period: 50
 
