@@ -75,6 +75,9 @@ class FeatureProfileSettings:
     supertrend_multiplier: Optional[float] = None
     supertrend_cci_period: Optional[int] = None
 
+    overrides: Dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class FeaturesSettings:
     window_size: int = 128
@@ -201,6 +204,16 @@ def load_settings(path: Path | None = None) -> Settings:
 
     for name, cfg in profiles_raw.items():
         cfg = cfg or {}
+
+        known_keys = {
+            "use_atr", "use_volatility", "use_returns", "use_spread",
+            "atr_period", "vol_period", "short_periods", "ret_long_period", "spread_period",
+            "supertrend_atr_period", "supertrend_multiplier", "supertrend_cci_period",
+        }
+
+        # всё остальное сохраняем как “raw overrides” (например murrey: {outputs: ...}, supertrend: {outputs: ...})
+        overrides = {k: v for k, v in cfg.items() if k not in known_keys}
+
         profiles[name] = FeatureProfileSettings(
             use_atr=cfg.get("use_atr", True),
             use_volatility=cfg.get("use_volatility", True),
@@ -214,6 +227,7 @@ def load_settings(path: Path | None = None) -> Settings:
             supertrend_atr_period=cfg.get("supertrend_atr_period"),
             supertrend_multiplier=cfg.get("supertrend_multiplier"),
             supertrend_cci_period=cfg.get("supertrend_cci_period"),
+            overrides=overrides,
         )
 
     features = FeaturesSettings(
