@@ -2,7 +2,6 @@ market:
   symbol: "EURUSD"      # Можно менять на GBPUSD, XAUUSD и т.п.
   timeframe: "M1"       # master-история, всегда M1
   working_timeframe: "H1"  # РАБОЧИЙ ТФ для снапшотов/обучения
-  n_bars_master: 70000  # Сколько баров тянуть в master при первичной загрузке
 
 paths:
   master_pattern: "{symbol}_{tf}_master.parquet"
@@ -10,9 +9,16 @@ paths:
 #имя счёта / сервер,
 #настройки для LIVE,
 #параметры RL.
+storage:
+  master_source: "mt5"       # default master location for "live update", etc.
+  snapshot_source: "mt5"     # snapshots will be created in this source folder
+  sources:
+    mt5:
+      subdir: "mt5"
+    dukascopy:
+      subdir: "dukascopy"
 
 dukascopy:
-
   symbol: null  # если null — использовать market.symbol
   start_year: 2010  # с какого года качать историю
   years: 15  # сколько лет максимум (чтобы не выкачать случайно весь XX век)
