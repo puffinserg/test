@@ -12,9 +12,7 @@ from .builders.master_builder import (
     update_master_from_live_logs_impl,
     build_master_from_external_impl,
 )
-from market_data.downloaders.dukascopy_m1_downloader import download_history_from_settings
-
-
+from market_data.downloaders.dukascopy_m1_downloader import download_history_from_settings as download_dukascopy_history_from_settings
 
 # --------- History / Master API ---------
 def update_master_from_live_logs() -> None:
@@ -25,12 +23,21 @@ def validate_master_history() -> None:
     print("[History] Проверка целостности master-истории (STUB)")
     validate_master_history_impl()
 
-def download_dukascopy_history() -> None:
-    print("[Dukascopy] Загрузка истории M1 по настройкам (settings.yaml)")
-    download_history_from_settings()
+def download_history() -> None:
+    src = getattr(SETTINGS, "data_source", "dukascopy")
+    print(f"[History] Загрузка истории M1 по настройкам (source={src})")
+    if src == "dukascopy":
+        download_dukascopy_history_from_settings()
+    elif src == "mt5":
+        print("[MT5] Пока не реализовано: загрузка истории из MT5 в external (будет через ticks→M1).")
+        # TODO: подключим, когда добавим downloader для MT5 ticks
+    else:
+        print(f"[History] Unknown data_source={src}. Supported: dukascopy|mt5")
 
 def build_master_from_external() -> None:
     print("[History] Сборка master-истории из external (Dukascopy → master)")
+    src = getattr(SETTINGS, "data_source", "dukascopy")
+    print(f"[History] Сборка master-истории из external → master (source={src})")
     build_master_from_external_impl()
 
 
