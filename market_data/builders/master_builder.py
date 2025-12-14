@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from config.paths import MASTER_DIR, BASE_DIR, LIVE_LOG_DIR
+from config.paths import MASTER_DIR, EXTERNAL_DIR, LIVE_LOG_DIR
 from config.settings import SETTINGS
 from market_data.connectors.mt5_connector import (
     init_mt5,
@@ -13,14 +13,12 @@ from market_data.connectors.mt5_connector import (
     download_m1_history,
 )
 
-
 def _master_file_path() -> Path:
     symbol = SETTINGS.market.symbol
     tf = SETTINGS.market.timeframe
     pattern = SETTINGS.paths.master_pattern
     filename = pattern.format(symbol=symbol, tf=tf)
     return MASTER_DIR / filename
-
 
 def _print_history_range(path: Path) -> None:
     """
@@ -43,17 +41,17 @@ def _print_history_range(path: Path) -> None:
 
 def build_master_from_external_impl() -> None:
     """
-    Собирает master-историю из годовых файлов Dukascopy в external_dir.
+    Собирает master-историю из external_dir активного источника (data_source).
     Ожидает файлы формата:
         <symbol>_<TF>_YYYY.parquet
     Например:
         EURUSD_M1_2010.parquet
     """
 
-    symbol = SETTINGS.dukascopy.symbol or SETTINGS.market.symbol
+    symbol = SETTINGS.market.symbol
     tf = SETTINGS.market.timeframe
 
-    external_dir = BASE_DIR / SETTINGS.dukascopy.external_dir
+    external_dir = EXTERNAL_DIR
     pattern = f"{symbol}_{tf}_*.parquet"
 
     if not external_dir.exists():
@@ -65,7 +63,7 @@ def build_master_from_external_impl() -> None:
         print(f"[master_builder] Не найдено файлов по шаблону {pattern} в {external_dir}")
         return
 
-    print(f"[master_builder] Собираем master из external для {symbol}, TF={tf}")
+    print(f"[master_builder] Собираем master из external (source={getattr(SETTINGS,'data_source','?')}) для {symbol}, TF={tf}")
     print("  Найдены файлы:")
     for f in files:
         print("   ", f.name)
