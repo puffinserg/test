@@ -37,9 +37,16 @@ dukascopy:
   external_dir: "data/external"   # legacy; будет игнорироваться при data_layout/sources
   price_divisor: 100000
 
+mt5:
+  symbol: null                 # если null — market.symbol
+  ticks_start_utc: "2010-01-01T00:00:00Z"
+  chunk_hours: 24              # окно запроса тиков
+  empty_chunks_stop: 50        # сколько подряд пустых чанков -> стоп (история закончилась)
+  build_m1: true               # строим M1 сразу
+  m1_granularity: "month"      # month|year (month проще докачивать)
+
 features:
   window_size: 128
-
   atr:
     atr_period: 14
   volatility:
