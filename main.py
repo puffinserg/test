@@ -66,7 +66,7 @@ def history_menu() -> None:
         src = getattr(SETTINGS, "data_source", "dukascopy")
         print(f"\n--- История (master data) ---   [source: {src}]")
         print("1. Скачать историю M1 в external (активный источник)")
-        +print("2. Собрать master-историю из external → master (активный источник)")
+        print("2. Собрать master-историю из external → master (активный источник)")
         print("3. Проверить целостность master-истории")
         print("4. Обновить master-историю из live-логов")
         print("0. Назад")
