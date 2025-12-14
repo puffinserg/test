@@ -1,6 +1,7 @@
 # RL_PyTorch/market_data/market_data_layer.py
 from .builders.master_validator import validate_master_history_impl
 from config.settings import SETTINGS
+from market_data.builders.m1_from_mt5_ticks import build_external_m1_from_mt5_ticks_backfill
 from market_data.builders.snapshot_builder import (
     create_snapshot_from_master_impl,
     list_snapshots_impl,
@@ -29,8 +30,7 @@ def download_history() -> None:
     if src == "dukascopy":
         download_dukascopy_history_from_settings()
     elif src == "mt5":
-        print("[MT5] Пока не реализовано: загрузка истории из MT5 в external (будет через ticks→M1).")
-        # TODO: подключим, когда добавим downloader для MT5 ticks
+        build_external_m1_from_mt5_ticks_backfill()
     else:
         print(f"[History] Unknown data_source={src}. Supported: dukascopy|mt5")
 
