@@ -16,10 +16,10 @@ from market_data.market_data_layer import (
     list_snapshots,
     validate_snapshot,
     delete_snapshot,
-    download_dukascopy_history,
+    download_history,
     build_master_from_external,
 )
-
+from config.settings import SETTINGS
 
 from market_data.providers.training_provider import run_training_loop_interactive, run_validation_loop
 from market_data.providers.live_provider import start_live_trading, start_live_logger
@@ -29,10 +29,10 @@ from market_data.connectors.mt5_connector import (
     list_symbols,
 )
 
-
 def main_menu() -> None:
     while True:
-        print("\n=== MAIN MENU ===")
+        src = getattr(SETTINGS, "data_source", "dukascopy")
+        print(f"\n=== MAIN MENU ===   [data_source: {src}]")
         print("1. История (master data)")
         print("2. Снапшоты (training data)")
         print("3. Training режим")
@@ -63,9 +63,10 @@ def main_menu() -> None:
 
 def history_menu() -> None:
     while True:
-        print("\n--- История (master data) ---")
-        print("1. Скачать историю M1 с Dukascopy в external")
-        print("2. Собрать master-историю из external (Dukascopy → master)")
+        src = getattr(SETTINGS, "data_source", "dukascopy")
+        print(f"\n--- История (master data) ---   [source: {src}]")
+        print("1. Скачать историю M1 в external (активный источник)")
+        +print("2. Собрать master-историю из external → master (активный источник)")
         print("3. Проверить целостность master-истории")
         print("4. Обновить master-историю из live-логов")
         print("0. Назад")
@@ -73,7 +74,7 @@ def history_menu() -> None:
         choice = input("Выберите пункт: ").strip()
 
         if choice == "1":
-            download_dukascopy_history()
+            download_history()
         elif choice == "2":
             build_master_from_external()
         elif choice == "3":
