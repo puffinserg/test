@@ -117,10 +117,20 @@ class DukascopySettings:
     price_divisor: int = 100000
 
 @dataclass
+class MT5Settings:
+    symbol: Optional[str] = None
+    ticks_start_utc: Optional[str] = None
+    chunk_hours: int = 24
+    empty_chunks_stop: int = 50
+    build_m1: bool = True
+    m1_granularity: str = "month"
+
+@dataclass
 class Settings:
     market: MarketSettings = field(default_factory=MarketSettings)
     paths: PathsSettings = field(default_factory=PathsSettings)
     dukascopy: DukascopySettings = field(default_factory=DukascopySettings)
+    mt5: MT5Settings = field(default_factory=MT5Settings)
     features: FeaturesSettings = field(default_factory=FeaturesSettings)
     # --- data source switching ---
     data_source: str = "dukascopy"  # "dukascopy" | "mt5"
@@ -176,6 +186,16 @@ def load_settings(path: Path | None = None) -> Settings:
         years=int(d.get("years", 15)),
         external_dir=d.get("external_dir", "data/external"),
         price_divisor=int(d.get("price_divisor", 100_000)),
+    )
+
+    mt5_raw = raw.get("mt5", {}) or {}
+    mt5 = MT5Settings(
+        symbol=mt5_raw.get("symbol"),
+        ticks_start_utc=mt5_raw.get("ticks_start_utc"),
+        chunk_hours=int(mt5_raw.get("chunk_hours", 24)),
+        empty_chunks_stop=int(mt5_raw.get("empty_chunks_stop", 50)),
+        build_m1=bool(mt5_raw.get("build_m1", True)),
+        m1_granularity=str(mt5_raw.get("m1_granularity", "month")),
     )
 
     # --- features ---
@@ -258,6 +278,7 @@ def load_settings(path: Path | None = None) -> Settings:
         market=market,
         paths=paths,
         dukascopy=dukascopy,
+        mt5=mt5,
         features=features,
         data_source=data_source,
         data_layout = data_layout,
