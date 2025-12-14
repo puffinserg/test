@@ -76,7 +76,8 @@ def merge_write_m1(symbol: str, m1: pd.DataFrame, granularity: str) -> None:
     m1["time"] = pd.to_datetime(m1["time"], utc=True)
 
     # группируем по месяцам/годам и пишем по файлам
-    for key, chunk in m1.groupby(m1["time"].dt.to_period("M") if granularity == "month" else m1["time"].dt.to_period("Y")):
+    grp = m1["time"].dt.strftime("%Y%m") if granularity == "month" else m1["time"].dt.strftime("%Y")
+    for key, chunk in m1.groupby(grp):
         ts0 = pd.to_datetime(chunk["time"].iloc[0], utc=True)
         out_path = _m1_file_path(symbol, ts0, granularity)
         out_path.parent.mkdir(parents=True, exist_ok=True)
