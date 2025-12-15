@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+import MetaTrader5 as mt5
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +12,8 @@ import pandas as pd
 from config.settings import SETTINGS
 from config.paths import EXTERNAL_DIR
 from market_data.connectors.mt5_connector import init_mt5, shutdown_mt5, fetch_ticks_range
+from numpy.ma.extras import apply_along_axis
+from sympy.physics.units import kelvin
 
 
 def _parse_utc(s: str) -> datetime:
@@ -38,6 +41,22 @@ def _m1_file_path(symbol: str, ts: pd.Timestamp, granularity: str) -> Path:
         return EXTERNAL_DIR / f"{symbol}_M1_{_year_key(ts)}.parquet"
     return EXTERNAL_DIR / f"{symbol}_M1_{_month_key(ts)}.parquet"
 
+def _mt5_server_offset_hours() -> int:
+    """
+    Возвращает смещение серверного времени MT5 относительно UTC в часах.
+    Работает и при DST: вычисляется "сейчас" через time_current().
+    """
+    server_ts = mt5.time_current()
+    if not server_ts:
+        raise RuntimeError("mt5.time_current() returned 0/None (not connected?)")
+
+    # server_ts — это 'server time' в виде Unix timestamp.
+    # Сравниваем с реальным UTC now, получаем offset.
+    server_dt = datetime.fromtimestamp(server_ts, tz=timezone.utc)
+    utc_now = datetime.now(timezone.utc)
+
+    offset_sec = (server_dt - utc_now).total_seconds()
+    return int(round(offset_sec / 3600))
 
 def ticks_to_m1_bid(df_ticks: pd.DataFrame) -> pd.DataFrame:
     """
@@ -117,8 +136,15 @@ def build_external_m1_from_mt5_ticks_backfill() -> None:
     empty_stop = int(getattr(cfg, "empty_chunks_stop", 50))
     gran = str(getattr(cfg, "m1_granularity", "month")).strip().lower()
 
-    # end = "сейчас", обрезаем до минуты
-    dt_to = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    # end = "сейчас": якорим на 00:00 серверного дня (в UTC)
+    init_mt5()  # важно: сначала подключиться к MT5
+    offset_h = _mt5_server_offset_hours()
+    utc_now = datetime.now(timezone.utc)
+    server_now = utc_now + timedelta(hours=offset_h)
+    server_midnight = server_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    dt_to = server_midnight - timedelta(hours=offset_h)
+    print(f"[mt5->m1] detected server_offset_hours={offset_h}, dt_to_utc={dt_to.isoformat()}")
+
     delta = timedelta(hours=chunk_hours)
 
     print(f"[mt5->m1] Backfill {symbol}: {start_utc.isoformat()} -> {dt_to.isoformat()}")
@@ -126,10 +152,16 @@ def build_external_m1_from_mt5_ticks_backfill() -> None:
     print(f"[mt5->m1] external_dir={EXTERNAL_DIR}")
 
     empty_streak = 0
+    chunk_idx = 0
 
-    init_mt5()
+    # init_mt5() уже вызван выше перед расчетом dt_to
     try:
+
         while dt_to > start_utc:
+            # На длинном backfill пересчитываем offset иногда (DST/смены сервера)
+            if chunk_idx % 14 == 0:  # раз в 14 чанков (примерно раз в 2 недели при chunk_hours=24)
+                offset_h = _mt5_server_offset_hours()
+            chunk_idx += 1
             dt_from = dt_to - delta
             if dt_from < start_utc:
                 dt_from = start_utc
