@@ -41,22 +41,19 @@ def _m1_file_path(symbol: str, ts: pd.Timestamp, granularity: str) -> Path:
         return EXTERNAL_DIR / f"{symbol}_M1_{_year_key(ts)}.parquet"
     return EXTERNAL_DIR / f"{symbol}_M1_{_month_key(ts)}.parquet"
 
-def _mt5_server_offset_hours() -> int:
+def _mt5_server_offset_hours(symbol: str = "EURUSD") -> int:
     """
-    Возвращает смещение серверного времени MT5 относительно UTC в часах.
-    Работает и при DST: вычисляется "сейчас" через time_current().
+    Определяем смещение server_time относительно UTC.
+    Используем symbol_info_tick().time, т.к. mt5.time_current() может отсутствовать.
     """
-    server_ts = mt5.time_current()
-    if not server_ts:
-        raise RuntimeError("mt5.time_current() returned 0/None (not connected?)")
-
-    # server_ts — это 'server time' в виде Unix timestamp.
-    # Сравниваем с реальным UTC now, получаем offset.
-    server_dt = datetime.fromtimestamp(server_ts, tz=timezone.utc)
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        # fallback: если тика нет (редко), считаем offset=0
+        return 0
+    server_dt_utc = datetime.fromtimestamp(tick.time, tz=timezone.utc)
     utc_now = datetime.now(timezone.utc)
-
-    offset_sec = (server_dt - utc_now).total_seconds()
-    return int(round(offset_sec / 3600))
+    # округляем к ближайшему часу
+    return int(round((server_dt_utc - utc_now).total_seconds() / 3600))
 
 def ticks_to_m1_bid(df_ticks: pd.DataFrame) -> pd.DataFrame:
     """
@@ -89,36 +86,50 @@ def ticks_to_m1_bid(df_ticks: pd.DataFrame) -> pd.DataFrame:
 
 
 def merge_write_m1(symbol: str, m1: pd.DataFrame, granularity: str) -> None:
-    if m1.empty:
+    if m1 is None or m1.empty:
         return
 
+    m1 = m1.copy()
     m1["time"] = pd.to_datetime(m1["time"], utc=True)
 
-    # группируем по месяцам/годам и пишем по файлам
+    # группируем по месяцам/годам и пишем по файлам (без to_period, чтобы не ловить предупреждения tz)
     grp = m1["time"].dt.strftime("%Y%m") if granularity == "month" else m1["time"].dt.strftime("%Y")
-    for key, chunk in m1.groupby(grp):
+    for _, chunk in m1.groupby(grp, sort=True):
+        chunk = chunk.sort_values("time").reset_index(drop=True)
+
         ts0 = pd.to_datetime(chunk["time"].iloc[0], utc=True)
         out_path = _m1_file_path(symbol, ts0, granularity)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # читаем существующее (если битый parquet — считаем пустым)
+        old = None
         if out_path.exists():
-            old = pd.read_parquet(out_path)
-            if not old.empty:
-                old["time"] = pd.to_datetime(old["time"], utc=True)
-                merged = (
-                    pd.concat([old, chunk], ignore_index=True)
-                    .drop_duplicates(subset=["time"], keep="last")
-                    .sort_values("time")
-                    .reset_index(drop=True)
-                )
-            else:
-                merged = chunk.sort_values("time").reset_index(drop=True)
+            try:
+                old = pd.read_parquet(out_path)
+            except Exception as e:
+                print(f"[mt5->m1] WARN: cannot read {out_path.name} ({e}); rebuilding file")
+                old = None
+
+        if old is not None and not old.empty:
+            old = old.copy()
+            old["time"] = pd.to_datetime(old["time"], utc=True)
+
+            # объединяем, новые значения имеют приоритет (keep="last")
+            merged = (
+                pd.concat([old, chunk], ignore_index=True)
+                .drop_duplicates(subset=["time"], keep="last")
+                .sort_values("time")
+                .reset_index(drop=True)
+            )
         else:
-            merged = chunk.sort_values("time").reset_index(drop=True)
+            merged = chunk
 
-        merged.to_parquet(out_path, index=False)
-        print(f"[mt5->m1] wrote {len(merged)} rows -> {out_path.name}")
+        # атомарная запись: сначала во временный файл, затем replace()
+        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+        merged.to_parquet(tmp_path, index=False)
+        tmp_path.replace(out_path)
 
+        print(f"[mt5->m1] wrote {len(merged)} rows -> {out_path.name} (idempotent merge)")
 
 def build_external_m1_from_mt5_ticks_backfill() -> None:
     """
