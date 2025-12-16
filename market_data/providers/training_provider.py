@@ -11,16 +11,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 import pandas as pd
 
 from config.settings import SETTINGS
+from config.paths import SNAPSHOT_DIR
 from features.feature_engine import FeatureEngine
-
-
-BASE_DIR = Path(__file__).resolve().parents[2]  # .../RL_PyTorch
-SNAPSHOT_DIR = BASE_DIR / "data" / "snapshots"
 
 # ---------- вспомогательные функции ----------
 
@@ -90,7 +87,10 @@ def _choose_snapshot_interactive(role: Optional[str] = None,
 
     print(f"[Training] Доступные snapshot-файлы в {SNAPSHOT_DIR}:")
     for i, path in enumerate(files, start=1):
-        print(f"  {i}. {path.name}")
+        meta = _parse_snapshot_name(path) or {}
+        role_s = meta.get("role", "?")
+        tf_s = meta.get("tf", "?")
+        print(f" {i}. [{tf_s}/{role_s}] {path.name}")
 
     choice = input("Выберите номер snapshot (0 = отмена): ").strip()
     if not choice or not choice.isdigit():
@@ -145,7 +145,7 @@ def run_training_loop_interactive() -> None:
     """
     working_tf = SETTINGS.market.working_timeframe  # например "H1"
     snapshot_path = _choose_snapshot_interactive(
-        role="train",
+        role=None,
         tf=working_tf,
     )
     if snapshot_path is None:
@@ -169,9 +169,43 @@ def run_training_loop(snapshot_path: Path) -> None:
     df_feat = engine.enrich(df, drop_warmup=True)
     print(f"[Training] Результирующий dataframe shape: {df_feat.shape}")
 
+    # --- DEBUG EXPORT (Murrey + ST values only) ---
+    N = 500
+
+    cols = ["time", "open", "high", "low", "close"]
+
+    # SuperTrend values only
+    for c in ["st_H1", "st_H4", "st_D1"]:
+        if c in df_feat.columns:
+            cols.append(c)
+
+    # Murrey (H1/H4/D1) – уровни 0..8 и экстремы -2,-1,9,10 если есть
+    tfs = ["H1", "H4", "D1"]
+    mur_levels = [f"mur_{i}_8" for i in range(0, 9)] + ["mur_-2_8", "mur_-1_8", "mur_9_8", "mur_10_8"]
+
+    for tf in tfs:
+        for lvl in mur_levels:
+            col = f"{lvl}_{tf}"
+            if col in df_feat.columns:
+                cols.append(col)
+
+    # Murrey derived
+    mur_extra = ["mur_zone", "mur_pos_in_zone", "mur_nearest_idx",
+                 "mur_dist_close_to_nearest", "mur_dist_close_to_0_8",
+                 "mur_dist_close_to_4_8", "mur_dist_close_to_8_8"]
+    for tf in tfs:
+        for x in mur_extra:
+            col = f"{x}_{tf}"
+            if col in df_feat.columns:
+                cols.append(col)
+
+    out_df = df_feat[cols].tail(N).copy()
+    out_df.to_csv("debug_murrey_supertrend_compare.csv", index=False)
+    print("[Training] Exported:", "debug_murrey_supertrend_compare.csv", "rows:", len(out_df))
+
     # последние 3 бара с базовыми полями
     print("\n[Training] Последние 3 бара окна (с базовыми полями):")
-    cols_base = [c for c in ("time", "open", "high", "low", "close", "st_H1", "st_H4", "st_D1") if c in df_feat.columns]
+    cols_base = [c for c in ("time", "open", "high", "low", "close") if c in df_feat.columns]
     print(df_feat[cols_base].tail(5))
 
     # формируем вектор фич по последней строке
