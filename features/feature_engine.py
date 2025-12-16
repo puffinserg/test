@@ -256,6 +256,8 @@ class FeatureEngine:
             self.profile_name, FeatureProfileSettings()
         )
         apply_profile_feature_overrides(self.cfg, self.profile)
+        print(">>> effective supertrend.outputs:", self.cfg.supertrend.outputs)
+        print(">>> effective murrey.outputs:", self.cfg.murrey.outputs)
 
     # --------- эффективные параметры ---------
 
