@@ -49,7 +49,7 @@ def main_menu() -> None:
         elif choice == "3":
             training_menu()
         elif choice == "4":
-            live_menu()
+            live_menu()3
         elif choice == "5":
             service_menu()
         elif choice == "0":
