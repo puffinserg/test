@@ -71,6 +71,19 @@ def ticks_to_m1_bid(df_ticks: pd.DataFrame) -> pd.DataFrame:
     if "bid" not in df.columns:
         return pd.DataFrame()
 
+    # --- TICK SANITY FILTER (CRITICAL) ---
+    # Убираем "мусорные" тики, иначе получим ZERO OHLC в M1
+    df = df[df["bid"].notna()]
+    df = df[df["bid"] > 0]
+
+    if "ask" in df.columns:
+        df = df[df["ask"].notna()]
+        df = df[df["ask"] > 0]
+        df = df[df["ask"] >= df["bid"]]
+
+    if df.empty:
+        return pd.DataFrame()
+
     if "ask" in df.columns:
         df["spread"] = (df["ask"] - df["bid"]).astype("float64")
     else:
