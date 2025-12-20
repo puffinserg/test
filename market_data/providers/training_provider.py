@@ -16,14 +16,14 @@ from typing import Optional, List, Dict
 import pandas as pd
 
 from config.settings import SETTINGS
-from config.paths import SNAPSHOT_DIR
+from config.paths import SNAPSHOT_DIR, MASTER_DIR
 from features.feature_engine import FeatureEngine
+from datetime import timedelta
+
+# ВАЖНО: используем тот же ресемплер, что и при создании snapshot (чтобы не было расхождений)
+from market_data.builders.snapshot_builder import _resample_m1_to_tf  # noqa: WPS450 (private import, но минимальный патч)
 
 # ---------- вспомогательные функции ----------
-
-from typing import Optional, List, Dict
-...
-
 def _parse_snapshot_name(path: Path) -> Optional[Dict[str, str]]:
     """
     Ожидаемый формат имени:
@@ -135,6 +135,32 @@ def _select_feature_profile() -> str:
     print(f"[Training] Профиль '{choice}' не найден, используем {cfg.default_profile}")
     return cfg.default_profile
 
+def _tf_to_minutes(tf: str) -> int:
+    tf = tf.upper().strip()
+    if tf == "M1": return 1
+    if tf == "M5": return 5
+    if tf == "M15": return 15
+    if tf == "M30": return 30
+    if tf == "H1": return 60
+    if tf == "H4": return 240
+    if tf == "D1": return 1440
+    raise ValueError(f"Unsupported timeframe: {tf}")
+
+def _collect_required_tfs(settings) -> list[str]:
+    """
+    Собираем TF, которые реально нужны для расчёта фич.
+    - working_tf из market
+    - tfs из MTF-фич (supertrend/murrey)
+    """
+    tfs = {SETTINGS.market.working_timeframe.upper()}
+    for x in (SETTINGS.features.supertrend.tfs or []):
+        tfs.add(str(x).upper())
+    for x in (SETTINGS.features.murrey.tfs or []):
+        tfs.add(str(x).upper())
+
+    # на будущее: если появятся другие MTF-фичи — добавишь их сюда по аналогии
+    return sorted(tfs)
+
 # ---------- публичные функции ----------
 
 def run_training_loop_interactive() -> None:
@@ -159,14 +185,51 @@ def run_training_loop(snapshot_path: Path) -> None:
         print(f"[Training] Файл не найден: {snapshot_path}")
         return
 
-    df = pd.read_parquet(snapshot_path)
-    print(f"[Training] Исходный snapshot shape: {df.shape}")
+    # 1) читаем snapshot (чтобы взять start/end)
+    df_snap = pd.read_parquet(snapshot_path)
+    print(f"[Training] Исходный snapshot shape: {df_snap.shape}")
+    if "time" not in df_snap.columns:
+        raise ValueError("Snapshot parquet must contain 'time' column")
+    df_snap = df_snap.sort_values("time").reset_index(drop=True)
+    snap_start = pd.to_datetime(df_snap["time"].iloc[0])
+    snap_end = pd.to_datetime(df_snap["time"].iloc[-1])
 
+    # 2) FeatureEngine + профиль
     profile_name = _select_feature_profile()
     engine = FeatureEngine(SETTINGS.features, profile_name=profile_name)
     print(f"[Training] Используем профиль фич: {profile_name}")
 
-    df_feat = engine.enrich(df, drop_warmup=True)
+    # 3) собираем TF из settings.yaml (например H1/H4/D1)
+    required_tfs = _collect_required_tfs(SETTINGS)
+    max_tf_minutes = max(_tf_to_minutes(tf) for tf in required_tfs)
+
+    # 4) считаем base warmup в барах рабочего TF (как FeatureEngine уже умеет)
+    base_warmup_bars = int(engine._compute_warmup_bars())
+
+    # 5) переводим warmup в "минуты master M1" с учётом самого старшего TF + margin
+    warmup_minutes = max(base_warmup_bars * _tf_to_minutes(tf) for tf in required_tfs)
+    margin_minutes = max_tf_minutes
+    master_start = snap_start - timedelta(minutes=(warmup_minutes + margin_minutes))
+    master_end = snap_end
+
+    # 6) читаем master M1 (с расширением назад)
+    master_fname = SETTINGS.paths.master_pattern.format(symbol=SETTINGS.market.symbol, tf="M1")
+    master_path = MASTER_DIR / master_fname
+    df_m1 = pd.read_parquet(master_path)
+    if "time" not in df_m1.columns:
+        raise ValueError("Master parquet must contain 'time' column")
+    df_m1["time"] = pd.to_datetime(df_m1["time"])
+    df_m1 = df_m1[(df_m1["time"] >= master_start) & (df_m1["time"] <= master_end)].copy()
+    if df_m1.empty:
+        raise RuntimeError(f"Master slice is empty: {master_path} [{master_start}..{master_end}]")
+
+    # 7) ресемплим M1 -> working_tf на расширенном диапазоне
+    df_work = _resample_m1_to_tf(df_m1, SETTINGS.market.working_timeframe)
+
+    # 8) считаем фичи БЕЗ drop_warmup и режем по времени снапшота => первый бар снапшота остаётся
+    df_feat_ext = engine.enrich(df_work, drop_warmup=False)
+    df_feat = df_feat_ext[(df_feat_ext["time"] >= snap_start) & (df_feat_ext["time"] <= snap_end)].copy()
+    df_feat = df_feat.reset_index(drop=True)
     print(f"[Training] Результирующий dataframe shape: {df_feat.shape}")
 
     # --- DEBUG EXPORT (Murrey + ST values only) ---
