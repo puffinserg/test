@@ -35,7 +35,6 @@ class SpreadSettings:
 class SuperTrendSettings:
     enabled: bool = True
     atr_period: int = 5
-    multiplier: float = 3.0
     cci_period: int = 50
     cci_price: str = "typical"
     tfs: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
@@ -72,7 +71,6 @@ class FeatureProfileSettings:
     ret_long_period: Optional[int] = None
     spread_period: Optional[int] = None
     supertrend_atr_period: Optional[int] = None
-    supertrend_multiplier: Optional[float] = None
     supertrend_cci_period: Optional[int] = None
 
     overrides: Dict[str, Any] = field(default_factory=dict)
@@ -209,7 +207,6 @@ def load_settings(path: Path | None = None) -> Settings:
     supertrend = SuperTrendSettings(
         enabled=st_raw.get("enabled", True),
         atr_period=int(st_raw.get("atr_period", 5)),
-        multiplier=float(st_raw.get("multiplier", 3.0)),
         cci_period=int(st_raw.get("cci_period", 50)),
         cci_price=st_raw.get("cci_price", "typical"),
         tfs=list(st_raw.get("tfs", ["H1", "H4", "D1"])),
@@ -237,7 +234,7 @@ def load_settings(path: Path | None = None) -> Settings:
         known_keys = {
             "use_atr", "use_volatility", "use_returns", "use_spread",
             "atr_period", "vol_period", "short_periods", "ret_long_period", "spread_period",
-            "supertrend_atr_period", "supertrend_multiplier", "supertrend_cci_period", "use_supertrend", "use_murrey",
+            "supertrend_atr_period", "supertrend_cci_period", "use_supertrend", "use_murrey",
         }
 
         # всё остальное сохраняем как “raw overrides” (например murrey: {outputs: ...}, supertrend: {outputs: ...})
@@ -256,7 +253,6 @@ def load_settings(path: Path | None = None) -> Settings:
             ret_long_period=cfg.get("ret_long_period"),
             spread_period=cfg.get("spread_period"),
             supertrend_atr_period=cfg.get("supertrend_atr_period"),
-            supertrend_multiplier=cfg.get("supertrend_multiplier"),
             supertrend_cci_period=cfg.get("supertrend_cci_period"),
             overrides=overrides,
         )
