@@ -114,7 +114,7 @@ def compute_supertrend_and_cci(
                 trend_dn[t-1] = trend_up[t-1]
         if cci_now >= st_threshold:
             # MT5 индикатор: Low - ATR (без коэффициента)
-            trend_up[t] = low[t] - (atr[t-1] if t > 0 else 0.0)
+            trend_up[t] = low[t] - atr[t]
 
             if t > 0 and trend_up[t-1] != 0.0 and trend_up[t] < trend_up[t-1]:
                 trend_up[t] = trend_up[t-1]
@@ -122,7 +122,7 @@ def compute_supertrend_and_cci(
             direction[t] = 1
         else:
             # MT5 индикатор: High + ATR (без коэффициента)
-            trend_dn[t] = high[t] + (atr[t-1] if t > 0 else 0.0)
+            trend_dn[t] = high[t] + atr[t]
             if t > 0 and trend_dn[t-1] != 0.0 and trend_dn[t] > trend_dn[t-1]:
                 trend_dn[t] = trend_dn[t-1]
             st_line[t] = trend_dn[t]
