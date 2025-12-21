@@ -279,9 +279,6 @@ class FeatureEngine:
     def _eff_st_atr_period(self) -> int:
         return self.profile.supertrend_atr_period or self.cfg.supertrend.atr_period
 
-    def _eff_st_multiplier(self) -> float:
-        return self.profile.supertrend_multiplier or self.cfg.supertrend.multiplier
-
     def _eff_st_cci_period(self) -> int:
         return self.profile.supertrend_cci_period or self.cfg.supertrend.cci_period
 
@@ -590,7 +587,6 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
 
     # --- Параметры из профиля / конфигурации ---
     atr_period = engine._eff_st_atr_period()
-    multiplier = engine._eff_st_multiplier()
     cci_period = engine._eff_st_cci_period()
 
     # --- Чтение outputs из конфигурации ---
@@ -624,7 +620,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
     # --- 1) рабочий TF (без ресемплинга) ---
     if working_tf in active_tfs:
         st_series, dir_series, cci_series = compute_supertrend_and_cci(
-            df, atr_period, multiplier, cci_period
+            df, atr_period, cci_period
         )
 
         if working_tf in st_tfs:
@@ -678,7 +674,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
 
         # 2.2. считаем SuperTrend/CCI на старшем TF
         st_htf, dir_htf, cci_htf = compute_supertrend_and_cci(
-            df_htf, atr_period, multiplier, cci_period
+            df_htf, atr_period, cci_period
         )
 
         # 2.3. готовим таблицу фич старшего TF для merge_asof

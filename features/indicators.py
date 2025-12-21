@@ -6,115 +6,132 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
+def atr_wilder_mt(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int) -> np.ndarray:
+    """
+    ATR максимально близко к MetaTrader iATR:
+    - TR = max(H-L, |H-prevC|, |L-prevC|)
+    - Wilder smoothing
+    - первые period-1 значений = 0 (как "невалидные" в терминах индикатора)
+    - первое валидное значение ATR ставим на индексе [period-1] как SMA(TR[0:period])
+      (это важный сдвиг, который обычно даёт ровно такие расхождения как у тебя).
+    """
+    n = len(close)
+    p = max(1, int(period))
+    atr = np.zeros(n, dtype=float)
+    if n == 0:
+        return atr
+
+    prev_close = np.empty(n, dtype=float)
+    prev_close[0] = close[0]
+    prev_close[1:] = close[:-1]
+
+    tr = np.maximum.reduce([
+        high - low,
+        np.abs(high - prev_close),
+        np.abs(low - prev_close),
+    ])
+
+    # первые (p-1) значений считаем "не готовыми"
+    if n < p:
+        return atr
+
+    # MT-style старт: ATR на индексе (p-1) = SMA(TR[0:p])
+    atr[p - 1] = float(np.mean(tr[0:p]))
+
+    for t in range(p, n):
+        atr[t] = (atr[t - 1] * (p - 1) + tr[t]) / p
+
+    return atr
+
 def compute_supertrend_and_cci(
     df_ohlc: pd.DataFrame,
     atr_period: int,
-    multiplier: float,
     cci_period: int,
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:
     """
-    SuperTrend + CCI в стиле MT5 (supertrendmt5.mq5):
-      - CCI по PRICE_TYPICAL
-      - ATR = Wilder (как iATR)
-      - TrendUp = Low - ATR*mult, TrendDown = High + ATR*mult
-      - выбор активной линии по знаку CCI
-      - перенос буферов при смене знака CCI для непрерывности
-
-    Возвращает:
-      st_series  – единая линия SuperTrend (как "Trend" buffer),
-      dir_series – +1/-1 по знаку CCI,
-      cci_series – значение CCI.
+    SUPER-TREND 1:1 как в supertrendmt5.mq5:
+      - CCI: PRICE_TYPICAL, period = CCI_Period
+      - ATR: iATR (Wilder), period = ATR_Period, БЕЗ multiplier
+      - TrendUp = Low - ATR
+      - TrendDown = High + ATR
+      - перенос при смене знака CCI: TrendUp[t-1] = TrendDown[t-1] / наоборот
+      - "липкость" уровней:
+          if TrendUp[t-1]!=0 and TrendUp[t] < TrendUp[t-1] => TrendUp[t]=TrendUp[t-1]
+          if TrendDown[t-1]!=0 and TrendDown[t] > TrendDown[t-1] => TrendDown[t]=TrendDown[t-1]
+    Возвращаем одну линию st (как st0 из MT4-экспорта), dir и cci.
     """
-    high = df_ohlc["high"].astype(float)
-    low = df_ohlc["low"].astype(float)
-    close = df_ohlc["close"].astype(float)
+    high = df_ohlc["high"].astype(float).to_numpy()
+    low  = df_ohlc["low"].astype(float).to_numpy()
+    close= df_ohlc["close"].astype(float).to_numpy()
+    n = len(df_ohlc)
 
-    # ---------- True Range ----------
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            (high - low),
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-
-    # ---------- ATR Wilder (iATR) ----------
-    tr_np = tr.to_numpy(dtype=float)
-    n = len(tr_np)
-    atr_np = np.full(n, np.nan, dtype=float)
-    if n > 0:
-        # старт: SMA(TR, period) на первом доступном окне
-        p = max(1, int(atr_period))
-        # для маленьких выборок не падаем
-        first = min(p, n)
-        atr_np[0] = np.nanmean(tr_np[:first])
-        for i in range(1, n):
-            atr_np[i] = (atr_np[i - 1] * (p - 1) + tr_np[i]) / p
-
-    atr = pd.Series(atr_np, index=df_ohlc.index)
-
-    # ---------- CCI PRICE_TYPICAL (как iCCI(..., PRICE_TYPICAL)) ----------
+    # -------- CCI PRICE_TYPICAL --------
     tp = (high + low + close) / 3.0
-    p = max(1, int(cci_period))
-    sma_tp = tp.rolling(window=p, min_periods=p).mean()
+    p_cci = max(1, int(cci_period))
 
-    # mean deviation: mean(|tp_j - sma_tp_i|) по окну (важно: относительно текущего SMA)
-    def _mean_dev(arr: np.ndarray) -> float:
-        m = arr.mean()
+    tp_s = pd.Series(tp, index=df_ohlc.index)
+    sma = tp_s.rolling(p_cci, min_periods=p_cci).mean()
+
+    # mean deviation относительно SMA текущего окна (это и есть среднее)
+    def _md(arr: np.ndarray) -> float:
+        m = float(arr.mean())
         return float(np.mean(np.abs(arr - m)))
 
-    md = tp.rolling(window=p, min_periods=p).apply(_mean_dev, raw=True)
-    denom = 0.015 * md.replace(0, np.nan)
-    cci = ((tp - sma_tp) / denom).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    md = tp_s.rolling(p_cci, min_periods=p_cci).apply(_md, raw=True)
+    denom = (0.015 * md).replace(0, np.nan)
+    cci_s = ((tp_s - sma) / denom).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    cci = cci_s.to_numpy(dtype=float)
 
-    # ---------- MT5 SuperTrend logic (CCI-driven) ----------
-    h = high.to_numpy(dtype=float)
-    l = low.to_numpy(dtype=float)
-    c = close.to_numpy(dtype=float)
-    cci_np = cci.to_numpy(dtype=float)
-    atrv = atr.to_numpy(dtype=float) * float(multiplier)
+    # -------- TR --------
+    prev_close = np.roll(close, 1)
+    prev_close[0] = close[0]
+    tr = np.maximum.reduce([
+        high - low,
+        np.abs(high - prev_close),
+        np.abs(low  - prev_close),
+    ])
 
-    trend_up = np.full(n, np.nan, dtype=float)
-    trend_dn = np.full(n, np.nan, dtype=float)
-    trend = np.full(n, np.nan, dtype=float)
-    direction = np.full(n, 0, dtype=int)
+    # -------- ATR как iATR (MT-style) --------
+    atr = atr_wilder_mt(high, low, close, atr_period)
 
-    for i in range(n):
-        # базовые уровни
-        tu = l[i] - atrv[i]
-        td = h[i] + atrv[i]
+    # -------- SuperTrend buffers (как в MQ5: 0 = empty) --------
+    trend_up = np.zeros(n, dtype=float)
+    trend_dn = np.zeros(n, dtype=float)
+    st_line  = np.zeros(n, dtype=float)   # итоговая линия (как st0)
+    direction= np.zeros(n, dtype=int)
 
-        if i == 0:
-            trend_up[i] = tu
-            trend_dn[i] = td
+    st_threshold = 0.0  # как double st=0.0 в mq5
+
+    for t in range(n):
+        cci_now  = cci[t]
+        cci_prev = cci[t-1] if t > 0 else cci[t]
+
+        # перенос на ПРЕДЫДУЩЕМ баре (как TrendUp[i+1] = TrendDown[i+1])
+        if t > 0:
+            if cci_now >= st_threshold and cci_prev < st_threshold:
+                trend_up[t-1] = trend_dn[t-1]
+            if cci_now <= st_threshold and cci_prev > st_threshold:
+                trend_dn[t-1] = trend_up[t-1]
+        if cci_now >= st_threshold:
+            # MT5 индикатор: Low - ATR (без коэффициента)
+            trend_up[t] = low[t] - (atr[t-1] if t > 0 else 0.0)
+
+            if t > 0 and trend_up[t-1] != 0.0 and trend_up[t] < trend_up[t-1]:
+                trend_up[t] = trend_up[t-1]
+            st_line[t] = trend_up[t]
+            direction[t] = 1
         else:
-            # перенос при смене знака (как в mq5)
-            if cci_np[i] >= 0 and cci_np[i - 1] < 0:
-                trend_up[i - 1] = trend_dn[i - 1]
-            if cci_np[i] <= 0 and cci_np[i - 1] > 0:
-                trend_dn[i - 1] = trend_up[i - 1]
+            # MT5 индикатор: High + ATR (без коэффициента)
+            trend_dn[t] = high[t] + (atr[t-1] if t > 0 else 0.0)
+            if t > 0 and trend_dn[t-1] != 0.0 and trend_dn[t] > trend_dn[t-1]:
+                trend_dn[t] = trend_dn[t-1]
+            st_line[t] = trend_dn[t]
+            direction[t] = -1
 
-            # "подтягивание" уровней
-            if c[i - 1] > trend_up[i - 1]:
-                tu = max(tu, trend_up[i - 1])
-            if c[i - 1] < trend_dn[i - 1]:
-                td = min(td, trend_dn[i - 1])
-
-            trend_up[i] = tu
-            trend_dn[i] = td
-
-        if cci_np[i] >= 0:
-            trend[i] = trend_up[i]
-            direction[i] = 1
-        else:
-            trend[i] = trend_dn[i]
-            direction[i] = -1
-
-    st_series = pd.Series(trend, index=df_ohlc.index)
-    dir_series = pd.Series(direction, index=df_ohlc.index)
-    return st_series, dir_series, cci
+    # Чтобы поведение совпало с твоим CSV (где пустоты не нужны) — отдаём одну линию st_line
+    st_series  = pd.Series(st_line, index=df_ohlc.index).astype(float)
+    dir_series = pd.Series(direction, index=df_ohlc.index).astype(int)
+    return st_series, dir_series, cci_s
 
 def compute_atr(df_ohlc: pd.DataFrame, period: int) -> pd.Series:
     """

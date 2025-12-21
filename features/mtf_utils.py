@@ -66,7 +66,9 @@ def resample_ohlc(
         agg_dict["close"] = "last"
 
     res = (
-        df_idx.resample(rule, label="right", closed="right")
+        # Совместимо с тем, как формируются H1 снапшоты в snapshot_builder
+        # и с тем, как MT4/MT5 маркируют бар временем его открытия.
+        df_idx.resample(rule, label="left", closed="left")
         .agg(agg_dict)
         .dropna(subset=["open", "high", "low", "close"])
         .reset_index()
