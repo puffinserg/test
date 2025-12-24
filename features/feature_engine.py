@@ -15,6 +15,7 @@ from features.indicators import (
 )
 
 import numpy as np
+import os
 import pandas as pd
 import copy
 
@@ -99,6 +100,53 @@ def register_feature(
         )
         return func
     return decorator
+
+def _load_mt4_supertrend_csv(path: str) -> pd.DataFrame:
+    """
+    Читает MT4-выгрузку OHLC+ST (H1) и возвращает DF с колонкой 'time' (UTC) и ST-колонками:
+      st_H1, st_dir_H1, st_H4, st_dir_H4, st_D1, st_dir_D1
+    Ожидаемый формат (как у тебя): разделитель ';'
+    Date + час может быть отдельными колонками или одной строкой. Поддерживаем оба кейса.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"MT4 SuperTrend CSV not found: {path}")
+
+    df = pd.read_csv(path, sep=";", engine="python")
+
+    # 1) Попытка: есть Date и Time (час) отдельно
+    cols = {c.strip(): c for c in df.columns}
+    date_col = cols.get("Date")
+    time_col = cols.get("Time") or cols.get("Hour") or cols.get("time")  # на всякий
+
+    if date_col and time_col:
+        dt = df[date_col].astype(str).str.strip() + " " + df[time_col].astype(str).str.strip()
+        t = pd.to_datetime(dt, dayfirst=True, errors="coerce", utc=True)
+    else:
+        # 2) иначе: первая колонка может быть DateTime
+        first = df.columns[0]
+        t = pd.to_datetime(df[first], dayfirst=True, errors="coerce", utc=True)
+
+    out = pd.DataFrame({"time": t})
+
+    def pick(name: str) -> str | None:
+        return cols.get(name)
+
+    # маппинг из MT4 CSV -> наши имена
+    mapping = {
+        "st_line_cur": "st_H1",
+        "st_dir_cur":  "st_dir_H1",
+        "st_line_h4":  "st_H4",
+        "st_dir_h4":   "st_dir_H4",
+        "st_line_d1":  "st_D1",
+        "st_dir_d1":   "st_dir_D1",
+    }
+    for src, dst in mapping.items():
+        c = pick(src)
+        if c:
+            out[dst] = pd.to_numeric(df[c], errors="coerce")
+
+    out = out.dropna(subset=["time"]).sort_values("time")
+    return out
 
 def supertrend_lookback(ctx: FeatureContext) -> int:
     """
