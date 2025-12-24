@@ -60,7 +60,7 @@ features:
   supertrend:
     enabled: true
     # source:
-    source: "python"    #   - "python"  : считать ST в Python (текущая реализация)
+    source: "mt4_csv"    #   - "python"  : считать ST в Python (текущая реализация), mt4_csv - взять из выгруженного MT4 файла
     mt4_csv_path: "data/master/mt4/EURUSD_H1_master.csv"    #   - "mt4_csv" : брать готовые линии из MT4-выгрузки (рекомендуется для train/test)
     # базовые (дефолтные) параметры SuperTrend
     atr_period: 5
