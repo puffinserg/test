@@ -665,10 +665,6 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
     # MT4 CSV SOURCE (train/test): берём готовые st/dir из CSV
     # ============================================================
     if str(getattr(cfg_st, "source", "python")).lower() == "mt4_csv":
-        import os
-        import pandas as pd
-        import numpy as np
-
         csv_path = str(getattr(cfg_st, "mt4_csv_path", "data/master/mt4/EURUSD_H1_master.csv"))
         if not csv_path:
             print("[feature_engine] WARNING: supertrend.source=mt4_csv but mt4_csv_path is empty")
@@ -689,21 +685,9 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
             print("[feature_engine] WARNING: MT4 CSV missing 'Date' column")
             return
 
-        # Собираем time:
-        # - если есть отдельное время (часто это второй столбец без имени или 'Time')
-        time_col = None
-        for c in mt4.columns:
-            if str(c).lower() in ("time", "hour", "datetime"):
-                time_col = c
-                break
-
-        if time_col is not None:
-            ts = (mt4["Date"].astype(str).str.strip() + " " + mt4[time_col].astype(str).str.strip())
-            mt4_time = pd.to_datetime(ts, errors="coerce", dayfirst=True)
-        else:
-            # fallback: Date уже содержит дату+время
-            mt4_time = pd.to_datetime(mt4["Date"], errors="coerce", dayfirst=True)
-
+        # Date уже содержит дату+время (пример: "2009.07.31 11:00")
+        # ВАЖНО: делаем utc=True, чтобы совпало с df["time"] вида "...+00:00"
+        mt4_time = pd.to_datetime(mt4["Date"], errors="coerce", utc=True)
         mt4_feat = pd.DataFrame({"time": mt4_time})
 
         # Маппинг TF -> названия колонок в MT4 CSV
@@ -724,7 +708,11 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
                 mt4_feat[f"st_dir_{tf}"] = pd.to_numeric(mt4[c_dir], errors="coerce").fillna(0).astype(int)
 
         # merge_asof: подтягиваем последнее известное значение на момент бара снапшота
-        df_sorted = df.sort_values("time").reset_index(drop=True)
+        # Приводим time снапшота к datetime64[ns, UTC] чтобы merge_asof не “промахивался”
+        df_sorted = df.copy()
+        df_sorted["time"] = pd.to_datetime(df_sorted["time"], errors="coerce", utc=True)
+        df_sorted = df_sorted.sort_values("time").reset_index(drop=True)
+
         mt4_feat = mt4_feat.sort_values("time").dropna(subset=["time"])
         merged = pd.merge_asof(df_sorted, mt4_feat, on="time", direction="backward", allow_exact_matches=True)
 
