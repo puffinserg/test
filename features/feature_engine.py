@@ -661,6 +661,93 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
         # ничего не запрошено в outputs — можно ничего не считать
         return
 
+    # ============================================================
+    # MT4 CSV SOURCE (train/test): берём готовые st/dir из CSV
+    # ============================================================
+    if str(getattr(cfg_st, "source", "python")).lower() == "mt4_csv":
+        import os
+        import pandas as pd
+        import numpy as np
+
+        csv_path = str(getattr(cfg_st, "mt4_csv_path", "data/master/mt4/EURUSD_H1_master.csv"))
+        if not csv_path:
+            print("[feature_engine] WARNING: supertrend.source=mt4_csv but mt4_csv_path is empty")
+            return
+
+        # относительный путь считаем от корня проекта (cwd)
+        if not os.path.isabs(csv_path):
+            csv_path = os.path.abspath(csv_path)
+
+        if not os.path.exists(csv_path):
+            print(f"[feature_engine] WARNING: MT4 supertrend CSV not found: {csv_path}")
+            return
+
+        # Ожидаемый формат (как на твоём скрине):
+        # Date;Open;High;Low;Close;st_line_cur;st_dir_cur;st_line_h4;st_dir_h4;st_line_d1;st_dir_d1;...
+        mt4 = pd.read_csv(csv_path, sep=";", engine="python")
+        if "Date" not in mt4.columns:
+            print("[feature_engine] WARNING: MT4 CSV missing 'Date' column")
+            return
+
+        # Собираем time:
+        # - если есть отдельное время (часто это второй столбец без имени или 'Time')
+        time_col = None
+        for c in mt4.columns:
+            if str(c).lower() in ("time", "hour", "datetime"):
+                time_col = c
+                break
+
+        if time_col is not None:
+            ts = (mt4["Date"].astype(str).str.strip() + " " + mt4[time_col].astype(str).str.strip())
+            mt4_time = pd.to_datetime(ts, errors="coerce", dayfirst=True)
+        else:
+            # fallback: Date уже содержит дату+время
+            mt4_time = pd.to_datetime(mt4["Date"], errors="coerce", dayfirst=True)
+
+        mt4_feat = pd.DataFrame({"time": mt4_time})
+
+        # Маппинг TF -> названия колонок в MT4 CSV
+        col_map = {
+            "H1": ("st_line_cur", "st_dir_cur"),
+            "H4": ("st_line_h4", "st_dir_h4"),
+            "D1": ("st_line_d1", "st_dir_d1"),
+        }
+
+        want_tfs = _sort_tfs_by_tf_order(list(set(st_tfs + diffs_tfs)))
+        for tf in want_tfs:
+            if tf not in col_map:
+                continue
+            c_line, c_dir = col_map[tf]
+            if c_line in mt4.columns:
+                mt4_feat[f"st_{tf}"] = pd.to_numeric(mt4[c_line], errors="coerce")
+            if c_dir in mt4.columns:
+                mt4_feat[f"st_dir_{tf}"] = pd.to_numeric(mt4[c_dir], errors="coerce").fillna(0).astype(int)
+
+        # merge_asof: подтягиваем последнее известное значение на момент бара снапшота
+        df_sorted = df.sort_values("time").reset_index(drop=True)
+        mt4_feat = mt4_feat.sort_values("time").dropna(subset=["time"])
+        merged = pd.merge_asof(df_sorted, mt4_feat, on="time", direction="backward", allow_exact_matches=True)
+
+        # переносим колонки обратно в df (по порядку строк)
+        for c in merged.columns:
+            if c.startswith("st_") or c.startswith("st_dir_"):
+                df[c] = merged[c].astype(float if c.startswith("st_") else int)
+
+        # diffs
+        if diffs_enabled:
+            for tf in diffs_tfs:
+                st_col = f"st_{tf}"
+                if st_col in df.columns:
+                    for col in diffs_ohlc:
+                        if col in df.columns:
+                            df[f"{col}_minus_st_{tf}"] = df[col].astype(float) - df[st_col].astype(float)
+
+        # CCI из MT4 CSV у тебя нет — значит в режиме mt4_csv не делаем cci_*
+        if (outputs.get("cci_value", {}) or {}).get("enabled", False) or (outputs.get("cci_sign", {}) or {}).get("enabled", False):
+            print("[feature_engine] INFO: supertrend.source=mt4_csv -> CCI is not available from MT4 CSV, skipping cci_* outputs")
+
+        return
+
     # на всякий случай, если рабочий TF не указан явно, но используется где-то:
     if working_tf in tfs_cfg and working_tf not in active_tfs:
         active_tfs.append(working_tf)
@@ -698,10 +785,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
         if tf != working_tf and tf in (tfs_cfg or [])
     ]
 
-    print("DEBUG MTF: active_tfs =", active_tfs)
-    print("DEBUG MTF: tfs_cfg    =", tfs_cfg)
-    print("DEBUG MTF: working_tf =", working_tf)
-    print("DEBUG MTF: higher_tfs =", higher_tfs)
+    higher_tfs = [ tf for tf in active_tfs if tf != working_tf and tf in (tfs_cfg or []) ]
 
     if not higher_tfs:
         return
