@@ -70,7 +70,7 @@ features:
     outputs:
       supertrend_lines: [ "H1", "H4", "D1" ]  # линии SuperTrend по TF
       cci_value:    # CCI как отдельная фича
-        enabled: true
+        enabled: false
         tfs: [ "H1" ]
       cci_sign:         # знак CCI (-1/0/1 или bool)
         enabled: true
