@@ -34,6 +34,8 @@ class SpreadSettings:
 @dataclass
 class SuperTrendSettings:
     enabled: bool = True
+    source: str = "python"         # "python" | "mt4_csv"
+    mt4_csv_path: str = "data/master/mt4/EURUSD_H1_master.csv"
     atr_period: int = 5
     cci_period: int = 50
     cci_price: str = "typical"
