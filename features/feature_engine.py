@@ -664,92 +664,93 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
     # ============================================================
     # MT4 CSV SOURCE (train/test): берём готовые st/dir из CSV
     # ============================================================
+
+2
     if str(getattr(cfg_st, "source", "python")).lower() == "mt4_csv":
         csv_path = str(getattr(cfg_st, "mt4_csv_path", "data/master/mt4/EURUSD_H1_master.csv"))
         if not csv_path:
             print("[feature_engine] WARNING: supertrend.source=mt4_csv but mt4_csv_path is empty")
             return
 
-        # относительный путь считаем от корня проекта (cwd)
+        # относительный путь -> от текущего рабочего каталога проекта
         if not os.path.isabs(csv_path):
             csv_path = os.path.abspath(csv_path)
-
         if not os.path.exists(csv_path):
             print(f"[feature_engine] WARNING: MT4 supertrend CSV not found: {csv_path}")
             return
 
-        # Ожидаемый формат (как на твоём скрине):
-        # Date;Open;High;Low;Close;st_line_cur;st_dir_cur;st_line_h4;st_dir_h4;st_line_d1;st_dir_d1;...
-        mt4 = pd.read_csv(csv_path, sep=";", engine="python")
-        if "Date" not in mt4.columns:
+        mt4_raw = pd.read_csv(csv_path, sep=";", engine="python")
+        if "Date" not in mt4_raw.columns:
             print("[feature_engine] WARNING: MT4 CSV missing 'Date' column")
             return
 
-        # MT4 CSV: Date уже содержит дату + время
-        # Формат: YYYY.MM.DD HH:MM
+        mt4 = mt4_raw.copy()
+        # Формат из примера: "2009.07.31 11:00"
         mt4["time"] = pd.to_datetime(
-            mt4["Date"],
+            mt4["Date"].astype(str).str.strip(),
             format="%Y.%m.%d %H:%M",
             errors="coerce",
             utc=True,
         )
-        mt4 = mt4.dropna(subset=["time"]).sort_values("time")
+        mt4 = mt4.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
 
-        # Маппинг TF -> названия колонок в MT4 CSV
         col_map = {
             "H1": ("st_line_cur", "st_dir_cur"),
             "H4": ("st_line_h4", "st_dir_h4"),
             "D1": ("st_line_d1", "st_dir_d1"),
         }
 
+        # какие TF реально нужны по outputs
         want_tfs = _sort_tfs_by_tf_order(list(set(st_tfs + diffs_tfs)))
+
+        # формируем компактную таблицу только нужных колонок (ускорение + меньше шансов конфликтов)
+        mt4_feat = mt4[["time"]].copy()
         for tf in want_tfs:
             if tf not in col_map:
                 continue
             c_line, c_dir = col_map[tf]
             if c_line in mt4.columns:
-                mt4_feat[f"st_{tf}"] = pd.to_numeric(mt4[c_line], errors="coerce")
+                mt4_feat[c_line] = pd.to_numeric(mt4[c_line], errors="coerce")
             if c_dir in mt4.columns:
-                mt4_feat[f"st_dir_{tf}"] = pd.to_numeric(mt4[c_dir], errors="coerce").fillna(0).astype(int)
+                mt4_feat[c_dir] = pd.to_numeric(mt4[c_dir], errors="coerce").fillna(0).astype(int)
 
         # merge_asof: подтягиваем последнее известное значение на момент бара снапшота
-        # Приводим time снапшота к datetime64[ns, UTC] чтобы merge_asof не “промахивался”
-
         df_sorted = df.copy()
         df_sorted["time"] = pd.to_datetime(df_sorted["time"], errors="coerce", utc=True)
-        df_sorted = df_sorted.sort_values("time").reset_index(drop=True)
+        df_sorted = df_sorted.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
+        mt4_feat = mt4_feat.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
 
-        mt4_sorted = mt4.sort_values("time")
-        merged = pd.merge_asof(df_sorted, mt4_sorted, on="time", direction="backward", allow_exact_matches=True)
+        merged = pd.merge_asof(
+            df_sorted,
+            mt4_feat,
+            on="time",
+            direction="backward",
+            allow_exact_matches=True,
+        )
 
-        # переносим колонки обратно в df (по порядку строк)
-        MAP = {
-            "H1": ("st_line_cur", "st_dir_cur"),
-            "H4": ("st_line_h4",  "st_dir_h4"),
-            "D1": ("st_line_d1",  "st_dir_d1"),
-        }
-
-        for tf in active_tfs:
-            if tf not in MAP:
+        # переносим колонки в df
+        for tf in want_tfs:
+            if tf not in col_map:
                 continue
-            line_col, dir_col = MAP[tf]
-            if line_col in merged.columns:
-                df[f"st_{tf}"] = merged[line_col].astype(float)
-            if dir_col in merged.columns:
-                df[f"st_dir_{tf}"] = merged[dir_col].astype(int)
+            c_line, c_dir = col_map[tf]
+            if c_line in merged.columns:
+                df[f"st_{tf}"] = merged[c_line].astype(float)
+            if c_dir in merged.columns:
+                df[f"st_dir_{tf}"] = merged[c_dir].astype(int)
 
-        # diffs
+        # diffs (OHLC - ST)
         if diffs_enabled:
             for tf in diffs_tfs:
                 st_col = f"st_{tf}"
-                if st_col in df.columns:
-                    for col in diffs_ohlc:
-                        if col in df.columns:
-                            df[f"{col}_minus_st_{tf}"] = df[col].astype(float) - df[st_col].astype(float)
+                if st_col not in df.columns:
+                    continue
+                for col in diffs_ohlc:
+                    if col in df.columns:
+                        df[f"{col}_minus_st_{tf}"] = df[col].astype(float) - df[st_col].astype(float)
 
-        # CCI из MT4 CSV у тебя нет — значит в режиме mt4_csv не делаем cci_*
+        # CCI из MT4 CSV отсутствует -> cci_* не генерируем
         if (outputs.get("cci_value", {}) or {}).get("enabled", False) or (outputs.get("cci_sign", {}) or {}).get("enabled", False):
-            print("[feature_engine] INFO: supertrend.source=mt4_csv -> CCI is not available from MT4 CSV, skipping cci_* outputs")
+            print("[feature_engine] INFO: supertrend.source=mt4_csv -> CCI is not available in MT4 CSV, skipping cci_* outputs")
 
         return
 
