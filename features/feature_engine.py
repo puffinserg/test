@@ -723,9 +723,20 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
         merged = pd.merge_asof(df_sorted, mt4_sorted, on="time", direction="backward", allow_exact_matches=True)
 
         # переносим колонки обратно в df (по порядку строк)
-        for c in merged.columns:
-            if c.startswith("st_") or c.startswith("st_dir_"):
-                df[c] = merged[c].astype(float if c.startswith("st_") else int)
+        MAP = {
+            "H1": ("st_line_cur", "st_dir_cur"),
+            "H4": ("st_line_h4",  "st_dir_h4"),
+            "D1": ("st_line_d1",  "st_dir_d1"),
+        }
+
+        for tf in active_tfs:
+            if tf not in MAP:
+                continue
+            line_col, dir_col = MAP[tf]
+            if line_col in merged.columns:
+                df[f"st_{tf}"] = merged[line_col].astype(float)
+            if dir_col in merged.columns:
+                df[f"st_dir_{tf}"] = merged[dir_col].astype(int)
 
         # diffs
         if diffs_enabled:
