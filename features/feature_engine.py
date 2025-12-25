@@ -15,7 +15,6 @@ from features.indicators import (
 )
 
 import numpy as np
-import os
 import pandas as pd
 import copy
 
@@ -100,53 +99,6 @@ def register_feature(
         )
         return func
     return decorator
-
-def _load_mt4_supertrend_csv(path: str) -> pd.DataFrame:
-    """
-    Читает MT4-выгрузку OHLC+ST (H1) и возвращает DF с колонкой 'time' (UTC) и ST-колонками:
-      st_H1, st_dir_H1, st_H4, st_dir_H4, st_D1, st_dir_D1
-    Ожидаемый формат (как у тебя): разделитель ';'
-    Date + час может быть отдельными колонками или одной строкой. Поддерживаем оба кейса.
-    """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"MT4 SuperTrend CSV not found: {path}")
-
-    df = pd.read_csv(path, sep=";", engine="python")
-
-    # 1) Попытка: есть Date и Time (час) отдельно
-    cols = {c.strip(): c for c in df.columns}
-    date_col = cols.get("Date")
-    time_col = cols.get("Time") or cols.get("Hour") or cols.get("time")  # на всякий
-
-    if date_col and time_col:
-        dt = df[date_col].astype(str).str.strip() + " " + df[time_col].astype(str).str.strip()
-        t = pd.to_datetime(dt, dayfirst=True, errors="coerce", utc=True)
-    else:
-        # 2) иначе: первая колонка может быть DateTime
-        first = df.columns[0]
-        t = pd.to_datetime(df[first], dayfirst=True, errors="coerce", utc=True)
-
-    out = pd.DataFrame({"time": t})
-
-    def pick(name: str) -> str | None:
-        return cols.get(name)
-
-    # маппинг из MT4 CSV -> наши имена
-    mapping = {
-        "st_line_cur": "st_H1",
-        "st_dir_cur":  "st_dir_H1",
-        "st_line_h4":  "st_H4",
-        "st_dir_h4":   "st_dir_H4",
-        "st_line_d1":  "st_D1",
-        "st_dir_d1":   "st_dir_D1",
-    }
-    for src, dst in mapping.items():
-        c = pick(src)
-        if c:
-            out[dst] = pd.to_numeric(df[c], errors="coerce")
-
-    out = out.dropna(subset=["time"]).sort_values("time")
-    return out
 
 def supertrend_lookback(ctx: FeatureContext) -> int:
     """
@@ -622,9 +574,11 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
     if not cfg_st.enabled:
         return
 
-    required_cols = {"time", "high", "low", "close", "open"}
-    if not required_cols.issubset(df.columns):
-        print("[feature_engine] WARNING: cannot compute SuperTrend – OHLC/time missing")
+    # Гибкая проверка: time может быть в columns или в index
+    has_time = "time" in df.columns or "time" in df.index.names
+    required_cols = {"high", "low", "close", "open"}
+    if not (has_time and required_cols.issubset(df.columns)):
+        print("[feature_engine] WARNING: cannot compute SuperTrend – OHLC or time missing")
         return
 
     # Рабочий таймфрейм (например, "H1")
@@ -632,231 +586,149 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
         working_tf = SETTINGS.market.working_timeframe
     except Exception:
         working_tf = "H1"
-
     # --- Параметры из профиля / конфигурации ---
     atr_period = engine._eff_st_atr_period()
     cci_period = engine._eff_st_cci_period()
 
+    source = cfg_st.source.strip().lower()  # "python" или "mt4_csv"
+
     # --- Чтение outputs из конфигурации ---
     outputs = cfg_st.outputs or {}
-
     st_tfs = outputs.get("supertrend_lines", []) or []
     cci_cfg = outputs.get("cci_value", {}) or {}
     cci_tfs = cci_cfg.get("tfs") or []
-
     cci_sign_cfg = outputs.get("cci_sign", {}) or {}
     cci_sign_tfs = cci_sign_cfg.get("tfs") or []
-
     diffs_cfg = outputs.get("diffs", {}) or {}
     diffs_enabled = diffs_cfg.get("enabled", False)
     diffs_tfs = diffs_cfg.get("tfs") or []
     diffs_ohlc = diffs_cfg.get("ohlc") or ["open", "high", "low", "close"]
 
-    # какие TF вообще нужны для вычислений
-    tfs_cfg = cfg_st.tfs or [working_tf]
-    active_tfs = _sort_tfs_by_tf_order(
-        list(st_tfs) + list(cci_tfs) + list(cci_sign_tfs) + list(diffs_tfs)
-    )
-    if not active_tfs:
-        # ничего не запрошено в outputs — можно ничего не считать
-        return
+    # Список всех TF, которые нужны для outputs
+    needed_tfs = set(st_tfs + cci_tfs + cci_sign_tfs + diffs_tfs)
+    if not needed_tfs:
+        return  # ничего не запрошено
 
-    # ============================================================
-    # MT4 CSV SOURCE (train/test): берём готовые st/dir из CSV
-    # ============================================================
+    if source == "python":
+        # === ОРИГИНАЛЬНАЯ ЛОГИКА (оставляем полностью без изменений) ===
+        tfs_cfg = cfg_st.tfs or [working_tf]
+        active_tfs = _sort_tfs_by_tf_order(list(needed_tfs))
+        if working_tf not in active_tfs:
+            active_tfs.append(working_tf)
 
-2
-    if str(getattr(cfg_st, "source", "python")).lower() == "mt4_csv":
-        csv_path = str(getattr(cfg_st, "mt4_csv_path", "data/master/mt4/EURUSD_H1_master.csv"))
-        if not csv_path:
-            print("[feature_engine] WARNING: supertrend.source=mt4_csv but mt4_csv_path is empty")
-            return
-
-        # относительный путь -> от текущего рабочего каталога проекта
-        if not os.path.isabs(csv_path):
-            csv_path = os.path.abspath(csv_path)
-        if not os.path.exists(csv_path):
-            print(f"[feature_engine] WARNING: MT4 supertrend CSV not found: {csv_path}")
-            return
-
-        mt4_raw = pd.read_csv(csv_path, sep=";", engine="python")
-        if "Date" not in mt4_raw.columns:
-            print("[feature_engine] WARNING: MT4 CSV missing 'Date' column")
-            return
-
-        mt4 = mt4_raw.copy()
-        # Формат из примера: "2009.07.31 11:00"
-        mt4["time"] = pd.to_datetime(
-            mt4["Date"].astype(str).str.strip(),
-            format="%Y.%m.%d %H:%M",
-            errors="coerce",
-            utc=True,
-        )
-        mt4 = mt4.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
-
-        col_map = {
-            "H1": ("st_line_cur", "st_dir_cur"),
-            "H4": ("st_line_h4", "st_dir_h4"),
-            "D1": ("st_line_d1", "st_dir_d1"),
-        }
-
-        # какие TF реально нужны по outputs
-        want_tfs = _sort_tfs_by_tf_order(list(set(st_tfs + diffs_tfs)))
-
-        # формируем компактную таблицу только нужных колонок (ускорение + меньше шансов конфликтов)
-        mt4_feat = mt4[["time"]].copy()
-        for tf in want_tfs:
-            if tf not in col_map:
-                continue
-            c_line, c_dir = col_map[tf]
-            if c_line in mt4.columns:
-                mt4_feat[c_line] = pd.to_numeric(mt4[c_line], errors="coerce")
-            if c_dir in mt4.columns:
-                mt4_feat[c_dir] = pd.to_numeric(mt4[c_dir], errors="coerce").fillna(0).astype(int)
-
-        # merge_asof: подтягиваем последнее известное значение на момент бара снапшота
-        df_sorted = df.copy()
-        df_sorted["time"] = pd.to_datetime(df_sorted["time"], errors="coerce", utc=True)
-        df_sorted = df_sorted.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
-        mt4_feat = mt4_feat.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
-
-        merged = pd.merge_asof(
-            df_sorted,
-            mt4_feat,
-            on="time",
-            direction="backward",
-            allow_exact_matches=True,
-        )
-
-        # переносим колонки в df
-        for tf in want_tfs:
-            if tf not in col_map:
-                continue
-            c_line, c_dir = col_map[tf]
-            if c_line in merged.columns:
-                df[f"st_{tf}"] = merged[c_line].astype(float)
-            if c_dir in merged.columns:
-                df[f"st_dir_{tf}"] = merged[c_dir].astype(int)
-
-        # diffs (OHLC - ST)
-        if diffs_enabled:
-            for tf in diffs_tfs:
-                st_col = f"st_{tf}"
-                if st_col not in df.columns:
-                    continue
+        # 1) Рабочий TF
+        if working_tf in active_tfs:
+            st_series, dir_series, cci_series = compute_supertrend_and_cci(
+                df, atr_period, cci_period
+            )
+            if working_tf in st_tfs:
+                df[f"st_{working_tf}"] = st_series
+                df[f"st_dir_{working_tf}"] = dir_series
+            if cci_cfg.get("enabled", False) and working_tf in cci_tfs:
+                df[f"cci_{working_tf}"] = cci_series
+            if cci_sign_cfg.get("enabled", False) and working_tf in cci_sign_tfs:
+                df[f"cci_sign_{working_tf}"] = np.sign(cci_series)
+            if diffs_enabled and working_tf in diffs_tfs and working_tf in st_tfs:
                 for col in diffs_ohlc:
                     if col in df.columns:
-                        df[f"{col}_minus_st_{tf}"] = df[col].astype(float) - df[st_col].astype(float)
+                        df[f"{col}_minus_st_{working_tf}"] = df[col].astype(float) - st_series
 
-        # CCI из MT4 CSV отсутствует -> cci_* не генерируем
-        if (outputs.get("cci_value", {}) or {}).get("enabled", False) or (outputs.get("cci_sign", {}) or {}).get("enabled", False):
-            print("[feature_engine] INFO: supertrend.source=mt4_csv -> CCI is not available in MT4 CSV, skipping cci_* outputs")
-
-        return
-
-    # на всякий случай, если рабочий TF не указан явно, но используется где-то:
-    if working_tf in tfs_cfg and working_tf not in active_tfs:
-        active_tfs.append(working_tf)
-
-    # --- 1) рабочий TF (без ресемплинга) ---
-    if working_tf in active_tfs:
-        st_series, dir_series, cci_series = compute_supertrend_and_cci(
-            df, atr_period, cci_period
-        )
-
-        if working_tf in st_tfs:
-            df[f"st_{working_tf}"] = st_series
-            df[f"st_dir_{working_tf}"] = dir_series
-
-        if cci_cfg.get("enabled", False) and working_tf in cci_tfs:
-            df[f"cci_{working_tf}"] = cci_series
-
-        if cci_sign_cfg.get("enabled", False) and working_tf in cci_sign_tfs:
-            df[f"cci_sign_{working_tf}"] = np.sign(cci_series)
-
-        if diffs_enabled and working_tf in diffs_tfs and working_tf in st_tfs:
-            for col in diffs_ohlc:
-                if col in df.columns:
-                    df[f"{col}_minus_st_{working_tf}"] = (
-                        df[col].astype(float) - st_series
-                    )
-
-    # --- 2) старшие TF (H4, D1 и т.п.) через ресемплинг ---
-    # берём только те TF, которые:
-    #   а) присутствуют в cfg.supertrend.tfs,
-    #   б) реально нужны по outputs,
-    #   в) отличаются от working_tf.
-    higher_tfs = [
-        tf for tf in active_tfs
-        if tf != working_tf and tf in (tfs_cfg or [])
-    ]
-
-    higher_tfs = [ tf for tf in active_tfs if tf != working_tf and tf in (tfs_cfg or []) ]
-
-    if not higher_tfs:
-        return
-
-    # базовый df для ресемплинга
-    base_ohlc = df[["time", "open", "high", "low", "close"]].copy()
-
-    for tf in higher_tfs:
-        # 2.1. ресемплинг OHLC на старший TF
-        try:
+        # 2) Старшие TF
+        base_ohlc = df[["time", "open", "high", "low", "close"]].copy()
+        higher_tfs = [tf for tf in active_tfs if tf != working_tf and tf in tfs_cfg]
+        for tf in higher_tfs:
             df_htf = resample_ohlc(base_ohlc, tf)
-        except ValueError as e:
-            print(f"[feature_engine] WARNING: cannot resample to {tf}: {e}")
-            continue
+            if df_htf.empty:
+                continue
+            st_htf, dir_htf, cci_htf = compute_supertrend_and_cci(df_htf, atr_period, cci_period)
 
-        if df_htf.empty:
-            continue
+            df_feat_htf = df_htf[["time"]].copy()
+            cols = []
+            if tf in st_tfs:
+                df_feat_htf[f"st_{tf}"] = st_htf
+                df_feat_htf[f"st_dir_{tf}"] = dir_htf
+                cols.extend([f"st_{tf}", f"st_dir_{tf}"])
+            if cci_cfg.get("enabled", False) and tf in cci_tfs:
+                df_feat_htf[f"cci_{tf}"] = cci_htf
+                cols.append(f"cci_{tf}")
+            if cci_sign_cfg.get("enabled", False) and tf in cci_sign_tfs:
+                df_feat_htf[f"cci_sign_{tf}"] = np.sign(cci_htf)
+                cols.append(f"cci_sign_{tf}")
+            if not cols:
+                continue
 
-        # 2.2. считаем SuperTrend/CCI на старшем TF
-        st_htf, dir_htf, cci_htf = compute_supertrend_and_cci(
-            df_htf, atr_period, cci_period
-        )
+            merged = align_higher_tf_to_working(df, df_feat_htf, cols)
+            for col in cols:
+                df[col] = merged[col]
 
-        # 2.3. готовим таблицу фич старшего TF для merge_asof
-        cols = []
-        df_feat_htf = df_htf[["time"]].copy()
-
-        if tf in st_tfs:
-            col_st = f"st_{tf}"
-            col_dir = f"st_dir_{tf}"
-            df_feat_htf[col_st] = st_htf
-            df_feat_htf[col_dir] = dir_htf
-            cols.extend([col_st, col_dir])
-
-        if cci_cfg.get("enabled", False) and tf in cci_tfs:
-            col_cci = f"cci_{tf}"
-            df_feat_htf[col_cci] = cci_htf
-            cols.append(col_cci)
-
-        if cci_sign_cfg.get("enabled", False) and tf in cci_sign_tfs:
-            col_cci_sign = f"cci_sign_{tf}"
-            df_feat_htf[col_cci_sign] = np.sign(cci_htf)
-            cols.append(col_cci_sign)
-
-        if not cols:
-            # для этого TF ничего не нужно
-            continue
-
-        # 2.4. подтягиваем фичи со старшего TF к рабочему через merge_asof
-        merged = align_higher_tf_to_working(df, df_feat_htf, cols)
-
-        # добавляем НОВЫЕ колонки в текущий df
-        for col in cols:
-            df[col] = merged[col]
-
-        # 2.5. diffs для старшего TF (после того как st_<tf> уже добавлен)
-        if diffs_enabled and tf in diffs_tfs and tf in st_tfs:
-            st_col = f"st_{tf}"
-            if st_col in df.columns:
-                st_series_aligned = df[st_col].astype(float)
+            if diffs_enabled and tf in diffs_tfs and tf in st_tfs:
+                st_aligned = df[f"st_{tf}"].astype(float)
                 for col in diffs_ohlc:
                     if col in df.columns:
-                        df[f"{col}_minus_st_{tf}"] = (
-                                df[col].astype(float) - st_series_aligned
-                        )
+                        df[f"{col}_minus_st_{tf}"] = df[col].astype(float) - st_aligned
+    elif source == "mt4_csv":
+        from pathlib import Path
+
+        csv_path = Path(cfg_st.mt4_csv_path)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"MT4 SuperTrend CSV not found: {csv_path}")
+
+        df_mt4 = pd.read_csv(
+            csv_path,
+            sep=";",
+            parse_dates=["Date"],
+            dayfirst=False,
+            index_col="Date"
+        )
+        df_mt4.index.name = "time"
+        df_mt4 = df_mt4.sort_index()
+
+        # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: убираем таймзону или приводим к одной
+        if df_mt4.index.tz is not None:
+            df_mt4.index = df_mt4.index.tz_convert('UTC').tz_localize(None)  # приводим к наивному UTC
+        else:
+            df_mt4.index = df_mt4.index.tz_localize('UTC').tz_localize(
+                None)  # если наивный — делаем как UTC, потом снимаем
+
+        # Или проще: всегда приводим к наивному (без таймзоны)
+        df_mt4.index = df_mt4.index.tz_localize(None)
+
+        # Переименовываем колонки
+        col_map = {
+            "st_line_cur": "st_H1",
+            "st_dir_cur": "st_dir_H1",
+            "st_line_h4": "st_H4",
+            "st_dir_h4": "st_dir_H4",
+            "st_line_d1": "st_D1",
+            "st_dir_d1": "st_dir_D1",
+        }
+        df_mt4 = df_mt4.rename(columns=col_map)
+
+        # Приводим индекс df к наивному datetime (на всякий случай)
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        if "time" in df.columns:
+            df = df.set_index("time")
+            df.index = df.index.tz_localize(None)
+
+        # Теперь реиндекс безопасен
+        for tf in needed_tfs:
+            st_col = f"st_{tf}"
+            dir_col = f"st_dir_{tf}"
+
+            if st_col in df_mt4.columns:
+                df[st_col] = df_mt4[st_col].reindex(df.index, method="nearest")
+            if dir_col in df_mt4.columns:
+                df[dir_col] = df_mt4[dir_col].reindex(df.index, method="nearest")
+
+            if diffs_enabled and tf in diffs_tfs and st_col in df.columns:
+                st_aligned = df[st_col].astype(float)
+                for col in diffs_ohlc:
+                    if col in df.columns:
+                        df[f"{col}_minus_st_{tf}"] = df[col].astype(float) - st_aligned
+    else:
+        raise ValueError(f"Unknown supertrend.source: {source}")
+
 @register_feature(
     "murrey",
     default_enabled=False,
@@ -872,9 +744,10 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
     if not cfg_m.enabled:
         return
 
-    required_cols = {"time", "open", "high", "low", "close"}
-    if not required_cols.issubset(df.columns):
-        print("[feature_engine] WARNING: cannot compute Murrey – OHLC/time missing")
+    has_time = "time" in df.columns or "time" in df.index.names
+    required_cols = {"open", "high", "low", "close"}
+    if not (has_time and required_cols.issubset(df.columns)):
+        print("[feature_engine] WARNING: cannot compute Murrey – OHLC or time missing")
         return
 
     try:
@@ -895,7 +768,14 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
     # хотим от младшего к старшему
     active_tfs = _sort_tfs_by_tf_order(tfs_cfg)
 
-    base_ohlc = df[["time", "open", "high", "low", "close"]].copy()
+    # base_ohlc для ресемплинга — time может быть индексом
+    if "time" in df.columns:
+        time_series = df["time"]
+    else:
+        time_series = df.index
+
+    base_ohlc = df[["open", "high", "low", "close"]].copy()
+    base_ohlc["time"] = time_series
 
     def _emit(tf: str, target_df: pd.DataFrame, mur: dict[str, pd.Series]) -> None:
         # уровни
@@ -933,13 +813,20 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
     higher_tfs = [tf for tf in active_tfs if tf != working_tf]
     for tf in higher_tfs:
         try:
-            df_htf = resample_ohlc(base_ohlc, tf)
+            # Подготавливаем base_ohlc с колонкой time
+            if "time" in df.columns:
+                time_series = df["time"]
+            else:
+                time_series = df.index
+            base_ohlc = df[["open", "high", "low", "close"]].copy()
+            base_ohlc["time"] = time_series
+
+            df_htf = resample_ohlc(base_ohlc, tf, time_col="time")
         except ValueError as e:
             print(f"[feature_engine] WARNING: cannot resample to {tf}: {e}")
             continue
         if df_htf.empty:
             continue
-
         mur_htf = compute_murrey_grid(df_htf, period_bars=period_bars, include_extremes=include_extremes)
 
         # формируем df_feat_htf только с нужными колонками

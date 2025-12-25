@@ -48,65 +48,87 @@ def compute_supertrend_and_cci(
     atr_period: int,
     cci_period: int,
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    SUPER-TREND 1:1 как в supertrendmt5.mq5:
+      - CCI: PRICE_TYPICAL, period = CCI_Period
+      - ATR: iATR (Wilder), period = ATR_Period, БЕЗ multiplier
+      - TrendUp = Low - ATR
+      - TrendDown = High + ATR
+      - перенос при смене знака CCI: TrendUp[t-1] = TrendDown[t-1] / наоборот
+      - "липкость" уровней:
+          if TrendUp[t-1]!=0 and TrendUp[t] < TrendUp[t-1] => TrendUp[t]=TrendUp[t-1]
+          if TrendDown[t-1]!=0 and TrendDown[t] > TrendDown[t-1] => TrendDown[t]=TrendDown[t-1]
+    Возвращаем одну линию st (как st0 из MT4-экспорта), dir и cci.
+    """
     high = df_ohlc["high"].astype(float).to_numpy()
     low  = df_ohlc["low"].astype(float).to_numpy()
     close= df_ohlc["close"].astype(float).to_numpy()
     n = len(df_ohlc)
 
-    # CCI (без изменений)
+    # -------- CCI PRICE_TYPICAL --------
     tp = (high + low + close) / 3.0
     p_cci = max(1, int(cci_period))
+
     tp_s = pd.Series(tp, index=df_ohlc.index)
     sma = tp_s.rolling(p_cci, min_periods=p_cci).mean()
+
+    # mean deviation относительно SMA текущего окна (это и есть среднее)
     def _md(arr: np.ndarray) -> float:
         m = float(arr.mean())
         return float(np.mean(np.abs(arr - m)))
+
     md = tp_s.rolling(p_cci, min_periods=p_cci).apply(_md, raw=True)
     denom = (0.015 * md).replace(0, np.nan)
     cci_s = ((tp_s - sma) / denom).replace([np.inf, -np.inf], 0.0).fillna(0.0)
     cci = cci_s.to_numpy(dtype=float)
 
-    # ATR (без изменений)
+    # -------- TR --------
+    prev_close = np.roll(close, 1)
+    prev_close[0] = close[0]
+    tr = np.maximum.reduce([
+        high - low,
+        np.abs(high - prev_close),
+        np.abs(low  - prev_close),
+    ])
+
+    # -------- ATR как iATR (MT-style) --------
     atr = atr_wilder_mt(high, low, close, atr_period)
 
-    # Buffers
+    # -------- SuperTrend buffers (как в MQ5: 0 = empty) --------
     trend_up = np.zeros(n, dtype=float)
     trend_dn = np.zeros(n, dtype=float)
-    st_line  = np.zeros(n, dtype=float)
+    st_line  = np.zeros(n, dtype=float)   # итоговая линия (как st0)
     direction= np.zeros(n, dtype=int)
 
-    st_threshold = 0.0
+    st_threshold = 0.0  # как double st=0.0 в mq5
 
     for t in range(n):
         cci_now  = cci[t]
-        cci_prev = cci[t-1] if t > 0 else 0.0
+        cci_prev = cci[t-1] if t > 0 else cci[t]
 
+        # перенос на ПРЕДЫДУЩЕМ баре (как TrendUp[i+1] = TrendDown[i+1])
+        if t > 0:
+            if cci_now >= st_threshold and cci_prev < st_threshold:
+                trend_up[t-1] = trend_dn[t-1]
+            if cci_now <= st_threshold and cci_prev > st_threshold:
+                trend_dn[t-1] = trend_up[t-1]
         if cci_now >= st_threshold:
-            # Базовый уровень
+            # MT5 индикатор: Low - ATR (без коэффициента)
             trend_up[t] = low[t] - atr[t]
 
-            # Перенос ПЕРЕД липкостью, если смена
-            if t > 0 and cci_prev < st_threshold:
-                trend_up[t] = trend_dn[t-1]
-
-            # Липкость (теперь применяется к возможно перенесённому уровню)
             if t > 0 and trend_up[t-1] != 0.0 and trend_up[t] < trend_up[t-1]:
                 trend_up[t] = trend_up[t-1]
-
             st_line[t] = trend_up[t]
             direction[t] = 1
         else:
+            # MT5 индикатор: High + ATR (без коэффициента)
             trend_dn[t] = high[t] + atr[t]
-
-            if t > 0 and cci_prev > st_threshold:
-                trend_dn[t] = trend_up[t-1]
-
             if t > 0 and trend_dn[t-1] != 0.0 and trend_dn[t] > trend_dn[t-1]:
                 trend_dn[t] = trend_dn[t-1]
-
             st_line[t] = trend_dn[t]
             direction[t] = -1
 
+    # Чтобы поведение совпало с твоим CSV (где пустоты не нужны) — отдаём одну линию st_line
     st_series  = pd.Series(st_line, index=df_ohlc.index).astype(float)
     dir_series = pd.Series(direction, index=df_ohlc.index).astype(int)
     return st_series, dir_series, cci_s
@@ -292,4 +314,3 @@ def compute_murrey_grid(
     out["mur_dist_close_to_8_8"] = (close - out["mur_8_8"]).abs().fillna(0.0)
 
     return out
-

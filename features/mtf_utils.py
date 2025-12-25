@@ -1,11 +1,8 @@
 # features/mtf_utils.py
 
 from __future__ import annotations
-
 from typing import List, Optional
-
 import pandas as pd
-
 
 TF_TO_MINUTES = {
     "M1": 1,
