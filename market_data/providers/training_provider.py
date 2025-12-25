@@ -188,11 +188,27 @@ def run_training_loop(snapshot_path: Path) -> None:
     # 1) читаем snapshot (чтобы взять start/end)
     df_snap = pd.read_parquet(snapshot_path)
     print(f"[Training] Исходный snapshot shape: {df_snap.shape}")
-    if "time" not in df_snap.columns:
-        raise ValueError("Snapshot parquet must contain 'time' column")
-    df_snap = df_snap.sort_values("time").reset_index(drop=True)
-    snap_start = pd.to_datetime(df_snap["time"].iloc[0])
-    snap_end = pd.to_datetime(df_snap["time"].iloc[-1])
+
+    # Извлекаем времена
+    if "time" in df_snap.columns:
+        times = pd.to_datetime(df_snap["time"])
+    elif isinstance(df_snap.index, pd.DatetimeIndex):
+        times = df_snap.index.to_series()
+    else:
+        raise ValueError("Snapshot должен иметь колонку 'time' или DatetimeIndex")
+
+    # Принудительно делаем наивными (без таймзоны)
+    times = times.dt.tz_convert('UTC').dt.tz_localize(None) if hasattr(times,
+                                                                       'dt') and times.dt.tz is not None else times
+    if hasattr(times, 'tz') and times.tz is not None:
+        times = times.tz_convert('UTC').tz_localize(None)
+
+    snap_start = times.min()
+    snap_end = times.max()
+
+    # Приводим к наивному формату (на всякий случай)
+    snap_start = pd.Timestamp(snap_start).tz_localize(None)
+    snap_end = pd.Timestamp(snap_end).tz_localize(None)
 
     # 2) FeatureEngine + профиль
     profile_name = _select_feature_profile()
@@ -209,8 +225,12 @@ def run_training_loop(snapshot_path: Path) -> None:
     # 5) переводим warmup в "минуты master M1" с учётом самого старшего TF + margin
     warmup_minutes = max(base_warmup_bars * _tf_to_minutes(tf) for tf in required_tfs)
     margin_minutes = max_tf_minutes
-    master_start = snap_start - timedelta(minutes=(warmup_minutes + margin_minutes))
-    master_end = snap_end
+    master_start_raw = snap_start - timedelta(minutes=(warmup_minutes + margin_minutes))
+    master_end_raw = snap_end
+
+    # Приводим к наивному (без таймзоны)
+    master_start = pd.Timestamp(master_start_raw).tz_localize(None)
+    master_end = pd.Timestamp(master_end_raw).tz_localize(None)
 
     # 6) читаем master M1 (с расширением назад)
     master_fname = SETTINGS.paths.master_pattern.format(symbol=SETTINGS.market.symbol, tf="M1")
@@ -218,34 +238,42 @@ def run_training_loop(snapshot_path: Path) -> None:
     df_m1 = pd.read_parquet(master_path)
     if "time" not in df_m1.columns:
         raise ValueError("Master parquet must contain 'time' column")
-    df_m1["time"] = pd.to_datetime(df_m1["time"])
+    df_m1["time"] = pd.to_datetime(df_m1["time"]).dt.tz_localize(None)  # наивный
     df_m1 = df_m1[(df_m1["time"] >= master_start) & (df_m1["time"] <= master_end)].copy()
-    if df_m1.empty:
-        raise RuntimeError(f"Master slice is empty: {master_path} [{master_start}..{master_end}]")
 
     # 7) ресемплим M1 -> working_tf на расширенном диапазоне
     df_work = _resample_m1_to_tf(df_m1, SETTINGS.market.working_timeframe)
 
-    # 8) считаем фичи БЕЗ drop_warmup и режем по времени снапшота => первый бар снапшота остаётся
+    # Сохраняем колонку time и устанавливаем её как индекс
+    if "time" not in df_work.columns:
+        raise ValueError("После ресэмплинга отсутствует колонка 'time'")
+    df_work["time"] = pd.to_datetime(df_work["time"])  # на всякий случай
+    df_work = df_work.set_index("time").sort_index()
+
+    # 8) считаем фичи БЕЗ drop_warmup
     df_feat_ext = engine.enrich(df_work, drop_warmup=False)
-    df_feat = df_feat_ext[(df_feat_ext["time"] >= snap_start) & (df_feat_ext["time"] <= snap_end)].copy()
-    df_feat = df_feat.reset_index(drop=True)
+
+    # 9) обрезка по датам — time теперь индекс, поэтому фильтруем по index
+    df_feat = df_feat_ext[
+        (df_feat_ext.index >= snap_start) &
+        (df_feat_ext.index <= snap_end)
+    ].copy()
+    df_feat = df_feat.reset_index()  # сохраняем time как колонку, без drop=True
     print(f"[Training] Результирующий dataframe shape: {df_feat.shape}")
 
     # --- DEBUG EXPORT (Murrey + ST values only) ---
     N = 500
 
-    cols = ["time", "open", "high", "low", "close"]
+    cols = ["time", "open", "high", "low", "close"]  # ← time первым
 
     # SuperTrend values only
     for c in ["st_H1", "st_H4", "st_D1"]:
         if c in df_feat.columns:
             cols.append(c)
 
-    # Murrey (H1/H4/D1) – уровни 0..8 и экстремы -2,-1,9,10 если есть
+    # Murrey levels
     tfs = ["H1", "H4", "D1"]
     mur_levels = [f"mur_{i}_8" for i in range(0, 9)] + ["mur_-2_8", "mur_-1_8", "mur_9_8", "mur_10_8"]
-
     for tf in tfs:
         for lvl in mur_levels:
             col = f"{lvl}_{tf}"
