@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -7,10 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-
 BASE_DIR = Path(__file__).resolve().parents[1]
 SETTINGS_FILE = Path(__file__).with_name("settings.yaml")
-
 
 # ---------- Секции настроек ----------
 
