@@ -113,8 +113,11 @@ features:
       supertrend_cci_period: 50
 
       murrey:
+        enabled: true
+        period_bars: 64
+        tfs: [ "H1", "H4"]
         outputs:
-          levels: false
+          levels: true
           distances: true
           zone: true
           pos_in_zone: true
