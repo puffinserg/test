@@ -809,7 +809,7 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
         mur = compute_murrey_grid(df, period_bars=period_bars, include_extremes=include_extremes)
         _emit(working_tf, df, mur)
 
-    # 2) higher TF через ресемплинг + merge_asof
+    # 2) higher TF через ресэмплинг + merge_asof
     higher_tfs = [tf for tf in active_tfs if tf != working_tf]
     for tf in higher_tfs:
         try:
@@ -818,28 +818,39 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
                 time_series = df["time"]
             else:
                 time_series = df.index
+
             base_ohlc = df[["open", "high", "low", "close"]].copy()
             base_ohlc["time"] = time_series
 
             df_htf = resample_ohlc(base_ohlc, tf, time_col="time")
-        except ValueError as e:
-            print(f"[feature_engine] WARNING: cannot resample to {tf}: {e}")
+            print(
+                f"[DEBUG Murrey] TF={tf}, shape={df_htf.shape}, dates from {df_htf['time'].min()} to {df_htf['time'].max()}")
+            print(f"[DEBUG Murrey] Последние 3 бара H4:\n{df_htf.tail(3)[['time', 'open', 'high', 'low', 'close']]}")
+            if df_htf.empty:
+                print(f"[feature_engine] WARNING: df_htf empty for {tf}")
+                continue
+
+            # Убеждаемся, что time есть как колонка в df_htf
+            if "time" not in df_htf.columns:
+                df_htf = df_htf.reset_index()  # если time в индексе — добавляем как колонку
+
+            mur_htf = compute_murrey_grid(df_htf, period_bars=period_bars, include_extremes=include_extremes)
+
+            # Формируем df_feat_htf с time и mur_*
+            df_feat_htf = df_htf[["time"]].copy()
+            _emit(tf, df_feat_htf, mur_htf)
+
+            # Колонки для merge (без time)
+            cols = [c for c in df_feat_htf.columns if c != "time"]
+
+            if not cols:
+                continue
+
+            merged = align_higher_tf_to_working(df, df_feat_htf, cols)
+
+            for c in cols:
+                df[c] = merged[c]
+
+        except Exception as e:
+            print(f"[feature_engine] ERROR in Murrey {tf}: {e}")
             continue
-        if df_htf.empty:
-            continue
-        mur_htf = compute_murrey_grid(df_htf, period_bars=period_bars, include_extremes=include_extremes)
-
-        # формируем df_feat_htf только с нужными колонками
-        df_feat_htf = df_htf[["time"]].copy()
-        cols = []
-
-        # временно “emit” в df_feat_htf, затем merge и подставим в df
-        _emit(tf, df_feat_htf, mur_htf)
-        cols = [c for c in df_feat_htf.columns if c != "time"]
-
-        if not cols:
-            continue
-
-        merged = align_higher_tf_to_working(df, df_feat_htf, cols)
-        for c in cols:
-            df[c] = merged[c]
