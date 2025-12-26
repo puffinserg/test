@@ -290,7 +290,7 @@ def run_training_loop(snapshot_path: Path) -> None:
             if col in df_feat.columns:
                 cols.append(col)
 
-    out_df = df_feat[cols].tail(N).copy()
+    out_df = df_feat[cols].head(N).copy()
     out_df.to_csv("debug_murrey_supertrend_compare.csv", index=False)
     print("[Training] Exported:", "debug_murrey_supertrend_compare.csv", "rows:", len(out_df))
 
