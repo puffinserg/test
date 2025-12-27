@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, is_dataclass, fields
 from typing import Sequence, Callable, Dict, Optional, List, Any
 from features.mtf_utils import resample_ohlc, align_higher_tf_to_working
-from features.indicators import compute_murrey_grid
+from features.indicators import compute_murrey_grid, compute_murrey_grid_mt4_vg, compute_murrey_grid_mt4_exact
 from features.indicators import (
     compute_supertrend_and_cci,
     compute_atr,
@@ -744,6 +744,37 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
     if not cfg_m.enabled:
         return
 
+    # === ТОЧНАЯ MT4-версия Murrey с кэшированием ===
+    # === Управление версиями Murrey ===
+    # Статический кэш состояний — только для mt4_exact
+    if not hasattr(feature_murrey, "mt4_states"):
+        feature_murrey.mt4_states = {}
+
+    # Выбираем функцию расчёта
+    mur_source = getattr(cfg_m, "source", "").strip().lower()
+
+    if mur_source == "mt4_exact":
+        calc_func = compute_murrey_grid_mt4_exact
+    elif mur_source in ("mt4_vg", ""):
+        calc_func = compute_murrey_grid_mt4_vg        # плавная версия
+    elif mur_source == "grid":
+        calc_func = compute_murrey_grid               # старая упрощённая
+    else:
+        raise ValueError(f"Unknown murrey.source: {mur_source}")
+
+    def _calc_murrey(_df: pd.DataFrame, tf_for_state: str):
+        if mur_source == "mt4_exact":
+            # Только для точной версии — кэширование по бару
+            state_key = f"{ctx.symbol}_{tf_for_state}"
+            state = feature_murrey.mt4_states.get(state_key)
+            if state is None:
+                state = MurreyMT4State()
+                feature_murrey.mt4_states[state_key] = state
+            return calc_func(_df, period_bars=period_bars, include_extremes=include_extremes, state=state)
+        else:
+            # Для mt4_vg и grid — полный пересчёт на каждом вызове (без state)
+            return calc_func(_df, period_bars=period_bars, include_extremes=include_extremes)
+
     has_time = "time" in df.columns or "time" in df.index.names
     required_cols = {"open", "high", "low", "close"}
     if not (has_time and required_cols.issubset(df.columns)):
@@ -805,16 +836,8 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
             target_df[f"mur_dist_close_to_8_8_{tf}"] = mur["mur_dist_close_to_8_8"]
 
     # 1) working TF (без ресемплинга)
-    mur_source = getattr(cfg_m, "source", "python")
-    mur_source = (mur_source or "python").strip().lower()
-
-    def _calc_murrey(_df):
-        if mur_source == "mt4_vg":
-            return compute_murrey_grid_mt4_vg(_df, P=period_bars, include_extremes=include_extremes)
-        return compute_murrey_grid(_df, period_bars=period_bars, include_extremes=include_extremes)
-
     if working_tf in active_tfs:
-        mur = _calc_murrey(df)
+        mur = _calc_murrey(df, working_tf)
         _emit(working_tf, df, mur)
 
     # 2) higher TF через ресэмплинг + merge_asof
@@ -856,7 +879,7 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
 
             df_htf["time"] = pd.to_datetime(df_htf["time"])
 
-            mur_htf = _calc_murrey(df_htf)
+            mur_htf = _calc_murrey(df_htf, tf)
 
             # Формируем df_feat_htf с time и mur_*
             df_feat_htf = df_htf[["time"]].copy()

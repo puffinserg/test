@@ -208,7 +208,168 @@ def compute_spread_stats(
 
     return spread_mean, spread_std, ratio
 
-def compute_murrey_grid(df: pd.DataFrame, period_bars: int = 64, include_extremes: bool = True):
+class MurreyMT4State:
+    """
+    Хранит состояние для эмуляции MT4-поведения (кэширование уровней).
+    Один объект на символ/TF.
+    """
+    def __init__(self):
+        self.last_time = None
+        self.cached_levels = None  # dict с уровнями
+
+def compute_murrey_grid_mt4_exact(df: pd.DataFrame,
+                                  period_bars: int = 64,
+                                  include_extremes: bool = True,
+                                  state: MurreyMT4State = None) -> dict:
+    """
+    Точная копия Murrey Math VG из MT4.
+    - Пересчёт только при новом баре (эмуляция nTime != Time[0]).
+    - Кэширование уровней до смены бара.
+    df должен быть отсортирован по времени по возрастанию, с колонками open, high, low, close.
+    """
+    if state is None:
+        state = MurreyMT4State()
+
+    # Текущий бар (последний)
+    current_time = df.index[-1]
+
+    print("Murrey DEBUF: compute_murrey_grid_mt4_exact")
+
+    # Если бар не изменился — возвращаем кэшированные уровни
+    if state.last_time == current_time and state.cached_levels is not None:
+        return state.cached_levels
+
+    # Новый бар — пересчитываем
+    if len(df) < period_bars:
+        levels = {f"mur_{i}_8": np.nan for i in range(-2, 11)}
+        levels.update({
+            "mur_zone": np.nan,
+            "mur_pos_in_zone": np.nan,
+            "mur_nearest_idx": np.nan,
+            "mur_dist_close_to_nearest": np.nan,
+            "mur_dist_close_to_0_8": np.nan,
+            "mur_dist_close_to_4_8": np.nan,
+            "mur_dist_close_to_8_8": np.nan,
+        })
+        state.cached_levels = levels
+        state.last_time = current_time
+        return levels
+
+    high = df["high"].values[-period_bars:]
+    low = df["low"].values[-period_bars:]
+    close = df["close"].iloc[-1]
+
+    v1 = np.min(low)
+    v2 = np.max(high)
+
+    # Fractal selection (точно как в MT4)
+    if 25000 < v2 <= 250000:
+        fractal = 100000
+    elif 2500 < v2 <= 25000:
+        fractal = 10000
+    elif 250 < v2 <= 2500:
+        fractal = 1000
+    elif 25 < v2 <= 250:
+        fractal = 100
+    elif 12.5 < v2 <= 25:
+        fractal = 12.5
+    elif 6.25 < v2 <= 12.5:
+        fractal = 12.5
+    elif 3.125 < v2 <= 6.25:
+        fractal = 6.25
+    elif 1.5625 < v2 <= 3.125:
+        fractal = 3.125
+    elif 0.390625 < v2 <= 1.5625:
+        fractal = 1.5625
+    elif v2 > 0:
+        fractal = 0.1953125
+    else:
+        fractal = 1.0
+
+    range_val = v2 - v1
+    if range_val == 0:
+        range_val = 1e-10
+
+    sum_val = np.floor(np.log(fractal / range_val) / np.log(2))
+    octave = fractal * (0.5 ** sum_val)
+
+    mn = np.floor(v1 / octave) * octave
+    mx = mn + octave if (mn + octave) > v2 else mn + 2 * octave
+
+    diff = mx - mn
+
+    # x1–x6
+    x1 = x2 = x3 = x4 = x5 = x6 = 0.0
+
+    if (v1 >= (3*diff/16 + mn)) and (v2 <= (9*diff/16 + mn)):
+        x2 = mn + diff/2
+    if (v1 >= (mn - diff/8)) and (v2 <= (5*diff/8 + mn)) and x2 == 0:
+        x1 = mn + diff/2
+    if (v1 >= (mn + 7*diff/16)) and (v2 <= (13*diff/16 + mn)):
+        x4 = mn + 3*diff/4
+    if (v1 >= (mn + 3*diff/8)) and (v2 <= (9*diff/8 + mn)) and x4 == 0:
+        x5 = mx
+    if (v1 >= (mn + diff/8)) and (v2 <= (7*diff/8 + mn)) and (x1 + x2 + x4 + x5 == 0):
+        x3 = mn + 3*diff/4
+    if x1 + x2 + x3 + x4 + x5 == 0:
+        x6 = mx
+
+    final_h = x1 + x2 + x3 + x4 + x5 + x6
+
+    # y1–y6
+    y1 = mn if x1 > 0 else 0.0
+    y2 = mn + diff/4 if x2 > 0 else 0.0
+    y3 = mn + diff/4 if x3 > 0 else 0.0
+    y4 = mn + diff/2 if x4 > 0 else 0.0
+    y5 = mn + diff/2 if x5 > 0 else 0.0
+    y6 = mn if (final_h > 0 and (y1 + y2 + y3 + y4 + y5 == 0)) else 0.0
+
+    final_l = y1 + y2 + y3 + y4 + y5 + y6
+
+    dmml = (final_h - final_l) / 8.0 if (final_h - final_l) != 0 else 1e-10
+
+    # Уровни
+    levels = {}
+    levels["mur_-2_8"] = final_l - 2 * dmml
+    levels["mur_-1_8"] = final_l - dmml
+    for i in range(9):
+        levels[f"mur_{i}_8"] = final_l + i * dmml
+    levels["mur_9_8"] = final_h + dmml
+    levels["mur_10_8"] = final_h + 2 * dmml
+
+    # Derived фичи (как в твоей текущей версии)
+    l0 = levels["mur_0_8"]
+    l8 = levels["mur_8_8"]
+
+    if close < l0:
+        zone = -1
+    elif close < l8:
+        zone = (close - l0) / (l8 - l0) * 8  # 0..8
+    else:
+        zone = 9
+
+    # pos_in_zone (0..1 внутри текущей 1/8)
+    all_levels = [levels[f"mur_{i}_8"] for i in range(-2, 11)]
+    nearest = min(all_levels, key=lambda x: abs(x - close))
+    nearest_idx = all_levels.index(nearest)
+
+    pos = (close - nearest) / dmml if dmml != 0 else 0.0
+
+    levels["mur_zone"] = zone
+    levels["mur_pos_in_zone"] = pos
+    levels["mur_nearest_idx"] = nearest_idx
+    levels["mur_dist_close_to_nearest"] = abs(close - nearest)
+    levels["mur_dist_close_to_0_8"] = abs(close - l0)
+    levels["mur_dist_close_to_4_8"] = abs(close - levels["mur_4_8"])
+    levels["mur_dist_close_to_8_8"] = abs(close - l8)
+
+    # Кэшируем
+    state.cached_levels = levels
+    state.last_time = current_time
+
+    return levels
+
+def compute_murrey_grid_mt4_vg(df: pd.DataFrame, period_bars: int = 64, include_extremes: bool = True):
     """
     Murrey Math Lines (VG / MT4) port.
     df: columns: time, open, high, low, close (time может быть, но не обязателен)
@@ -218,6 +379,8 @@ def compute_murrey_grid(df: pd.DataFrame, period_bars: int = 64, include_extreme
     high = df["high"].astype(float)
     low  = df["low"].astype(float)
     close = df["close"].astype(float)
+
+    print("Murrey DEBUF: compute_murrey_grid_mt4_vg")
 
     P = int(period_bars)
 
@@ -294,6 +457,9 @@ def compute_murrey_grid(df: pd.DataFrame, period_bars: int = 64, include_extreme
     y6 = pd.Series(np.where((finalH > 0) & ((y1 + y2 + y3 + y4 + y5) == 0), mn, 0.0), index=df.index)
 
     finalL = y1 + y2 + y3 + y4 + y5 + y6
+
+    print(
+        f"[Murrey DEBUG] v1={v1.iloc[-1]:.6f} v2={v2.iloc[-1]:.6f} fractal={fractal_s.iloc[-1]:.2f} octave={octave.iloc[-1]:.10f} mn={mn.iloc[-1]:.6f} mx={mx.iloc[-1]:.6f} finalL={finalL.iloc[-1]:.6f} finalH={finalH.iloc[-1]:.6f}")
 
     dmml = (finalH - finalL) / 8.0
 
@@ -395,6 +561,8 @@ def compute_murrey_grid(
     high = df_ohlc["high"].astype(float)
     low = df_ohlc["low"].astype(float)
     close = df_ohlc["close"].astype(float)
+
+    print("Murrey DEBUF: compute_murrey_grid_mt4_exact")
 
     hh = high.rolling(window=period_bars, min_periods=period_bars).max()
     ll = low.rolling(window=period_bars, min_periods=period_bars).min()
