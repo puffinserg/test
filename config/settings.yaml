@@ -82,7 +82,9 @@ features:
 
   murrey:
     enabled: true
-    source: mt4_vg
+    # source: mt4_exact    #grid|mt4_vg|mt4_exact
+    source: mt4_vg    # ← екущая (плавная) версия
+    # source: "grid"      # ← старая упрощённая
     period_bars: 64
     include_extremes: true
     tfs: [ "H1", "H4", "D1" ]
