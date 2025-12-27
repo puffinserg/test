@@ -82,6 +82,7 @@ features:
 
   murrey:
     enabled: true
+    source: mt4_vg
     period_bars: 64
     include_extremes: true
     tfs: [ "H1", "H4", "D1" ]
