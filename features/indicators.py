@@ -208,6 +208,166 @@ def compute_spread_stats(
 
     return spread_mean, spread_std, ratio
 
+def compute_murrey_grid(df: pd.DataFrame, period_bars: int = 64, include_extremes: bool = True):
+    """
+    Murrey Math Lines (VG / MT4) port.
+    df: columns: time, open, high, low, close (time может быть, но не обязателен)
+    Возвращает dict[str, pd.Series] с ключами mur_-2_8 ... mur_10_8 + zone/pos/dist
+    """
+
+    high = df["high"].astype(float)
+    low  = df["low"].astype(float)
+    close = df["close"].astype(float)
+
+    P = int(period_bars)
+
+    # MT4: iLowest/iHighest(P, shift) -> окно "текущий бар и P-1 прошлых"
+    v1 = low.rolling(P, min_periods=P).min()
+    v2 = high.rolling(P, min_periods=P).max()
+
+    rng = (v2 - v1)
+    rng = rng.where(rng > 0)
+
+    # --- fractal selection exactly like MQL4 (based on v2 absolute value) ---
+    v2v = v2.values
+    fractal = np.zeros_like(v2v, dtype=float)
+
+    # translate chain of ifs literally
+    fractal[(v2v <= 250000) & (v2v > 25000)] = 100000
+    fractal[(v2v <= 25000)  & (v2v > 2500)]  = 10000
+    fractal[(v2v <= 2500)   & (v2v > 250)]   = 1000
+    fractal[(v2v <= 250)    & (v2v > 25)]    = 100
+    fractal[(v2v <= 25)     & (v2v > 12.5)]  = 12.5
+    fractal[(v2v <= 12.5)   & (v2v > 6.25)]  = 12.5
+    fractal[(v2v <= 6.25)   & (v2v > 3.125)] = 6.25
+    fractal[(v2v <= 3.125)  & (v2v > 1.5625)] = 3.125
+    fractal[(v2v <= 1.5625) & (v2v > 0.390625)] = 1.5625
+    fractal[(v2v <= 0.390625) & (v2v > 0)] = 0.1953125
+
+    fractal_s = pd.Series(fractal, index=df.index)
+    fractal_s = fractal_s.where(fractal_s > 0)
+
+    # sum = floor(log(fractal/range)/log(2))
+    ratio = (fractal_s / rng)
+    ratio = ratio.where(ratio > 0)
+
+    sum_pow = np.floor(np.log(ratio) / np.log(2.0))
+    octave = fractal_s * (np.power(0.5, sum_pow))
+
+    # mn = floor(v1/octave)*octave
+    mn = np.floor(v1 / octave) * octave
+
+    # mx = (mn+octave > v2) ? mn+octave : mn+2*octave
+    mx = pd.Series(np.where((mn + octave) > v2, mn + octave, mn + 2.0 * octave), index=df.index)
+
+    # helpers
+    diff = (mx - mn)
+
+    # --- calculating x's (exact conditions) ---
+    x2 = pd.Series(np.where((v1 >= (3*diff/16 + mn)) & (v2 <= (9*diff/16 + mn)),
+                            mn + diff/2, 0.0), index=df.index)
+
+    x1 = pd.Series(np.where((v1 >= (mn - diff/8)) & (v2 <= (5*diff/8 + mn)) & (x2 == 0),
+                            mn + diff/2, 0.0), index=df.index)
+
+    x4 = pd.Series(np.where((v1 >= (mn + 7*diff/16)) & (v2 <= (13*diff/16 + mn)),
+                            mn + 3*diff/4, 0.0), index=df.index)
+
+    x5 = pd.Series(np.where((v1 >= (mn + 3*diff/8)) & (v2 <= (9*diff/8 + mn)) & (x4 == 0),
+                            mx, 0.0), index=df.index)
+
+    x3 = pd.Series(np.where((v1 >= (mn + diff/8)) & (v2 <= (7*diff/8 + mn)) &
+                            (x1 == 0) & (x2 == 0) & (x4 == 0) & (x5 == 0),
+                            mn + 3*diff/4, 0.0), index=df.index)
+
+    x6 = pd.Series(np.where((x1 + x2 + x3 + x4 + x5) == 0, mx, 0.0), index=df.index)
+
+    finalH = x1 + x2 + x3 + x4 + x5 + x6
+
+    # --- calculating y's (exact conditions) ---
+    y1 = pd.Series(np.where(x1 > 0, mn, 0.0), index=df.index)
+    y2 = pd.Series(np.where(x2 > 0, mn + diff/4, 0.0), index=df.index)
+    y3 = pd.Series(np.where(x3 > 0, mn + diff/4, 0.0), index=df.index)
+    y4 = pd.Series(np.where(x4 > 0, mn + diff/2, 0.0), index=df.index)
+    y5 = pd.Series(np.where(x5 > 0, mn + diff/2, 0.0), index=df.index)
+
+    y6 = pd.Series(np.where((finalH > 0) & ((y1 + y2 + y3 + y4 + y5) == 0), mn, 0.0), index=df.index)
+
+    finalL = y1 + y2 + y3 + y4 + y5 + y6
+
+    dmml = (finalH - finalL) / 8.0
+
+    # mml[0] = finalL - dmml*2  (это -2/8)
+    mml0 = finalL - dmml*2.0
+
+    # levels -2..+2 => total 13 lines (as in MT4)
+    levels = {}
+    for i in range(13):
+        levels_i = mml0 + dmml * i
+        # i=0 -> -2/8, i=2 -> 0/8, i=10 -> 8/8, i=12 -> +2/8
+        mur_idx = i - 2
+        levels[f"mur_{mur_idx}_8"] = levels_i
+
+    # zone / position within zone based on 0/8..8/8 (same idea as your текущие фичи)
+    l0 = levels["mur_0_8"]
+    l8 = levels["mur_8_8"]
+
+    # zone is between k/8 and (k+1)/8, k in [0..7]
+    zone = pd.Series(np.nan, index=df.index, dtype=float)
+    pos  = pd.Series(np.nan, index=df.index, dtype=float)
+
+    valid = l0.notna() & l8.notna()
+    if valid.any():
+        # stack 0..8
+        grid = np.vstack([levels[f"mur_{k}_8"].values for k in range(0, 9)])  # shape (9, n)
+        c = close.values
+
+        # find k such that grid[k] <= c < grid[k+1]
+        # handle outside by clipping
+        # compute k via count of levels <= close
+        le_cnt = np.sum(grid <= c, axis=0) - 1  # gives -1..8
+        k = np.clip(le_cnt, 0, 7)
+
+        zone.loc[valid] = k[valid.values]
+
+        # pos within zone
+        lo = grid[k, np.arange(len(c))]
+        hi = grid[k+1, np.arange(len(c))]
+        denom = (hi - lo)
+        denom = np.where(denom == 0, np.nan, denom)
+        p = (c - lo) / denom
+        pos.loc[valid] = p[valid.values]
+
+    # distances (как у тебя)
+    # nearest among 0..8
+    nearest_idx = pd.Series(np.nan, index=df.index, dtype=float)
+    dist_nearest = pd.Series(np.nan, index=df.index, dtype=float)
+
+    if valid.any():
+        grid0_8 = np.vstack([levels[f"mur_{k}_8"].values for k in range(0, 9)])  # (9,n)
+        c = close.values
+        d = np.abs(grid0_8 - c)
+        ni = np.argmin(d, axis=0)
+        nearest_idx.loc[valid] = ni[valid.values]
+        dist_nearest.loc[valid] = d[ni, np.arange(len(c))][valid.values]
+
+    out = dict(levels)
+
+    out["mur_zone"] = zone
+    out["mur_pos_in_zone"] = pos
+    out["mur_nearest_idx"] = nearest_idx
+    out["mur_dist_close_to_nearest"] = dist_nearest
+    out["mur_dist_close_to_0_8"] = (close - levels["mur_0_8"]).abs()
+    out["mur_dist_close_to_4_8"] = (close - levels["mur_4_8"]).abs()
+    out["mur_dist_close_to_8_8"] = (close - levels["mur_8_8"]).abs()
+
+    if not include_extremes:
+        # если экстремы не нужны — просто удалим -2,-1,9,10
+        for k in (-2, -1, 9, 10):
+            out.pop(f"mur_{k}_8", None)
+
+    return out
+
 def compute_murrey_grid(
     df_ohlc: pd.DataFrame,
     period_bars: int,

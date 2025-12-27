@@ -659,7 +659,7 @@ def feature_supertrend(df: pd.DataFrame, ctx: FeatureContext) -> None:
 
             merged = align_higher_tf_to_working(df, df_feat_htf, cols)
             for col in cols:
-                df[col] = merged[col]
+                df[col] = merged[col].to_numpy()
 
             if diffs_enabled and tf in diffs_tfs and tf in st_tfs:
                 st_aligned = df[f"st_{tf}"].astype(float)
@@ -805,8 +805,16 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
             target_df[f"mur_dist_close_to_8_8_{tf}"] = mur["mur_dist_close_to_8_8"]
 
     # 1) working TF (без ресемплинга)
+    mur_source = getattr(cfg_m, "source", "python")
+    mur_source = (mur_source or "python").strip().lower()
+
+    def _calc_murrey(_df):
+        if mur_source == "mt4_vg":
+            return compute_murrey_grid_mt4_vg(_df, P=period_bars, include_extremes=include_extremes)
+        return compute_murrey_grid(_df, period_bars=period_bars, include_extremes=include_extremes)
+
     if working_tf in active_tfs:
-        mur = compute_murrey_grid(df, period_bars=period_bars, include_extremes=include_extremes)
+        mur = _calc_murrey(df)
         _emit(working_tf, df, mur)
 
     # 2) higher TF через ресэмплинг + merge_asof
@@ -830,11 +838,25 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
                 print(f"[feature_engine] WARNING: df_htf empty for {tf}")
                 continue
 
-            # Убеждаемся, что time есть как колонка в df_htf
+            # Гарантируем, что time — именно колонка "time" (после resample/reset_index бывает "index" или idx_name)
             if "time" not in df_htf.columns:
-                df_htf = df_htf.reset_index()  # если time в индексе — добавляем как колонку
+                if isinstance(df_htf.index, pd.DatetimeIndex):
+                    idx_name = df_htf.index.name  # бывает None
+                    df_htf = df_htf.reset_index()
+                    # после reset_index колонка может называться idx_name или "index"
+                    if "time" not in df_htf.columns:
+                        if idx_name and idx_name in df_htf.columns:
+                            df_htf = df_htf.rename(columns={idx_name: "time"})
+                        elif "index" in df_htf.columns:
+                            df_htf = df_htf.rename(columns={"index": "time"})
+                        else:
+                            raise KeyError("time")
+                else:
+                    raise KeyError("time")
 
-            mur_htf = compute_murrey_grid(df_htf, period_bars=period_bars, include_extremes=include_extremes)
+            df_htf["time"] = pd.to_datetime(df_htf["time"])
+
+            mur_htf = _calc_murrey(df_htf)
 
             # Формируем df_feat_htf с time и mur_*
             df_feat_htf = df_htf[["time"]].copy()
@@ -846,10 +868,28 @@ def feature_murrey(df: pd.DataFrame, ctx: FeatureContext) -> None:
             if not cols:
                 continue
 
+            # --- SAFE debug: df_time может быть либо колонкой, либо индексом ---
+            if "time" in df.columns:
+                df_time = pd.to_datetime(df["time"])
+            elif isinstance(df.index, pd.DatetimeIndex):
+                df_time = pd.to_datetime(df.index)
+            else:
+                raise KeyError("time")
+
+            print("[DEBUG Murrey] df time source:",
+                  ("column" if "time" in df.columns else "index"),
+                  "dtype:", df_time.dtype,
+                  "min/max:", df_time.min(), df_time.max())
+
+            print("[DEBUG Murrey] htf time col?",
+                  ("time" in df_feat_htf.columns),
+                  "dtype:", df_feat_htf["time"].dtype,
+                  "min/max:", df_feat_htf["time"].min(), df_feat_htf["time"].max())
+
             merged = align_higher_tf_to_working(df, df_feat_htf, cols)
 
             for c in cols:
-                df[c] = merged[c]
+                df[c] = merged[c].to_numpy()
 
         except Exception as e:
             print(f"[feature_engine] ERROR in Murrey {tf}: {e}")

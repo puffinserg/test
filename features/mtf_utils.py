@@ -84,8 +84,38 @@ def align_higher_tf_to_working(
     Подтянуть значения со старшего TF к рабочему через merge_asof.
     Для каждого бара рабочего TF берется последний полностью сформированный бар старшего TF.
     """
-    dfw = df_work.sort_values(time_col)
-    dfh = df_htf.sort_values(time_col)[[time_col] + cols]
+    def _ensure_time_column(df: pd.DataFrame) -> pd.DataFrame:
+        # Если time уже колонка — ок
+        if time_col in df.columns:
+            return df
+        # Если time в DatetimeIndex — вынесем в колонку
+        if isinstance(df.index, pd.DatetimeIndex):
+            out = df.copy()
+            idx_name = out.index.name or time_col
+            out = out.reset_index().rename(columns={idx_name: time_col})
+            return out
+        raise KeyError(f"align_higher_tf_to_working: '{time_col}' not found in columns and index is not DatetimeIndex")
+
+    dfw = _ensure_time_column(df_work).sort_values(time_col)
+    dfh = _ensure_time_column(df_htf).sort_values(time_col)[[time_col] + cols]
+
+    # --- normalize time dtype (critical for merge_asof reliability) ---
+    dfw = dfw.copy()
+    dfh = dfh.copy()
+    dfw[time_col] = pd.to_datetime(dfw[time_col], errors="coerce")
+    dfh[time_col] = pd.to_datetime(dfh[time_col], errors="coerce")
+    # remove timezone if present
+    if getattr(dfw[time_col].dt, "tz", None) is not None:
+        dfw[time_col] = dfw[time_col].dt.tz_convert("UTC").dt.tz_localize(None)
+    else:
+        dfw[time_col] = dfw[time_col].dt.tz_localize(None)
+    if getattr(dfh[time_col].dt, "tz", None) is not None:
+        dfh[time_col] = dfh[time_col].dt.tz_convert("UTC").dt.tz_localize(None)
+    else:
+        dfh[time_col] = dfh[time_col].dt.tz_localize(None)
+
+    dfw = dfw.sort_values(time_col)
+    dfh = dfh.sort_values(time_col)
 
     merged = pd.merge_asof(
         dfw,
